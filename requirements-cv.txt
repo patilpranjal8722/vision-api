@@ -1,0 +1,14 @@
+# ==============================================================================
+# Vision API - Computer Vision & ML Dependencies (Future)
+# ==============================================================================
+# NOTE: These packages are NOT installed in the base lightweight template.
+# The ML/CV partner or deployment environment installs these later when
+# real model inference (e.g. YOLO, OpenCV preprocessing) is enabled.
+#
+# DO NOT install in base development without GPU / ML requirements:
+#
+# ultralytics>=8.0.0
+# opencv-python-headless>=4.8.0
+# torch>=2.0.0
+# torchvision>=0.15.0
+# ==============================================================================
