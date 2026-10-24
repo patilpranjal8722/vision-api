@@ -10,6 +10,8 @@ from typing import List, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+INSECURE_SECRET_PLACEHOLDER = "dev-insecure-secret-key-change-in-production-only-placeholder-32b"
+
 
 class Settings(BaseSettings):
     """Configuration settings for vision-api application."""
@@ -26,7 +28,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8000",
     ]
-    SECRET_KEY: str = "dev-insecure-secret-key-change-in-production-only-placeholder-32b"
+    # SECRET_KEY must come only from the environment / .env file
+    SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Rate Limiting (slowapi)
+    LOGIN_RATE_LIMIT: str = "5/minute"
+    RATE_LIMIT_ENABLED: bool = True
 
     # Database
     DATABASE_URL: str = "sqlite:///./vision_api.db"

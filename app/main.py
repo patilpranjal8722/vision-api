@@ -25,15 +25,23 @@ throughout this file:
 4. Routers (`app.include_router()`):
    FastAPI uses APIRouter instances to modularize routes across multiple files
    instead of writing every endpoint in a single massive file.
+
+5. Rate Limiting (`slowapi`):
+   Limits repetitive requests (such as brute-force password guessing) per client IP address.
 """
 
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
-from app.core.config import Settings, get_settings
+from app.api.routes.users import router as users_router
+from app.core.config import INSECURE_SECRET_PLACEHOLDER, Settings, get_settings
+from app.core.limiter import limiter
 from app.core.logging import get_logger, setup_logging
 
 logger = get_logger("vision_api.main")
@@ -41,25 +49,27 @@ logger = get_logger("vision_api.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Lifespan context manager managing application startup and shutdown events.
-
-    Beginner explanation:
-    - Code before `yield`: Runs once when the application boots up.
-      Use this for warm-up tasks like database connection pools or dummy detector checks.
-    - `yield`: The application is actively running and handling client requests.
-    - Code after `yield`: Runs once when the application is stopping.
-      Use this for graceful cleanup, saving state, or releasing connections.
-    """
+    """Lifespan context manager managing application startup and shutdown events."""
     settings: Settings = get_settings()
 
     # --- Startup phase ---
     setup_logging(debug=settings.DEBUG)
+
+    # Security check: verify SECRET_KEY is not empty or using the default placeholder
+    if not settings.SECRET_KEY or settings.SECRET_KEY == INSECURE_SECRET_PLACEHOLDER:
+        logger.warning(
+            "SECURITY WARNING: SECRET_KEY is empty or using an insecure placeholder! "
+            "Never use default keys in production. "
+            "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+        )
+
     logger.info(
         "Application starting up",
         extra={
             "app_name": settings.APP_NAME,
             "version": settings.APP_VERSION,
             "detector_backend": settings.DETECTOR_BACKEND,
+            "rate_limit_enabled": settings.RATE_LIMIT_ENABLED,
         },
     )
 
@@ -69,15 +79,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Application shutting down gracefully")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Create and configure a new instance of the FastAPI application.
+def rate_limit_custom_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return project standard error JSON when client exceeds rate limits."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
 
-    Beginner explanation:
-    - `FastAPI(title=..., lifespan=...)`: Instantiates the core web application.
-    - `add_middleware(CORSMiddleware, ...)`: Configures browser security rules
-      to permit frontend apps (e.g. running on localhost:3000) to communicate with this API.
-    - `include_router(...)`: Registers route groups (e.g. /health, /api/v1/detect).
-    """
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Create and configure a new instance of the FastAPI application."""
     if settings is None:
         settings = get_settings()
 
@@ -92,6 +103,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Attach slowapi rate limiter to app state and register exception handler
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, rate_limit_custom_handler)
+
     # Configure CORS middleware
     application.add_middleware(
         CORSMiddleware,
@@ -103,6 +118,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Register API route modules
     application.include_router(health_router)
+    application.include_router(auth_router)
+    application.include_router(users_router)
 
     return application
 

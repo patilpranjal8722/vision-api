@@ -53,9 +53,9 @@ The system is organized into four primary architectural tiers:
 ### Detailed Layer Responsibilities
 
 1. **API Routes (`app/api/routes/`)**
-   - Exposes RESTful endpoints (e.g., `/health`, future `/api/v1/detect`).
+   - Exposes RESTful endpoints (e.g., `/health`, `/auth/*`, `/users/*`, future `/api/v1/detect`).
    - Delegates validation to Pydantic schemas (`app/schemas/`).
-   - Enforces authentication and authorization dependencies.
+   - Enforces authentication and authorization dependencies (`app/api/deps.py`).
    - Converts service domain outputs to HTTP response formats.
 
 2. **Services (`app/services/`)**
@@ -75,7 +75,7 @@ The system is organized into four primary architectural tiers:
    - **`YoloDetector`**: Instantiated in later phases using Ultralytics YOLO weights from `models_store/`.
 
 4. **Database & Storage Layer (`app/db/`, `app/models/`, `uploads/`)**
-   - SQLAlchemy ORM models define schemas for detection history, images, and user accounts.
+   - SQLAlchemy ORM models define schemas for users, jobs, detection history, and alerts.
    - Raw binary uploads are stored on disk (`uploads/`), keeping database rows light with file paths and bounding box JSON.
 
 ---
@@ -110,7 +110,62 @@ sequenceDiagram
 
 ---
 
-## 4. Database Schema & Entity-Relationship (ER) Diagram
+## 4. Authentication & Authorization Flow
+
+The platform uses JWT-based stateless authentication with dual access/refresh tokens and Argon2id password hashing:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Auth as Auth Routes (/auth)
+    participant Sec as Security (Argon2 / JWT)
+    participant DB as Database (Users)
+    participant UserRoute as Protected Route (/users/me)
+
+    %% 1. Registration
+    Note over Client, DB: Step 1: Registration
+    Client->>Auth: POST /auth/register (email, username, password)
+    Auth->>Sec: hash_password(password)
+    Sec-->>Auth: Argon2id hash
+    Auth->>DB: INSERT User(role='user', is_active=True)
+    DB-->>Auth: Created User
+    Auth-->>Client: 201 Created (UserOut DTO)
+
+    %% 2. Login
+    Note over Client, DB: Step 2: Login & Token Issuance
+    Client->>Auth: POST /auth/login (OAuth2 form: username/email + password)
+    Auth->>DB: Query User by username or email
+    DB-->>Auth: User Record
+    Auth->>Sec: verify_password(password, hashed_password)
+    Sec-->>Auth: True (or dummy verification on missing user)
+    Auth->>Sec: create_access_token() + create_refresh_token()
+    Sec-->>Auth: Signed JWT Pair
+    Auth-->>Client: 200 OK {access_token, refresh_token, token_type: "bearer"}
+
+    %% 3. Protected Request
+    Note over Client, UserRoute: Step 3: Accessing Protected Endpoints
+    Client->>UserRoute: GET /users/me (Header: Authorization: Bearer <access_token>)
+    UserRoute->>Sec: decode_token(access_token, expected_type='access')
+    Sec-->>UserRoute: Valid claims {sub: user_id, type: 'access'}
+    UserRoute->>DB: Query User(id=user_id, is_active=True)
+    DB-->>UserRoute: User Record
+    UserRoute-->>Client: 200 OK (User Profile)
+
+    %% 4. Token Refresh
+    Note over Client, Auth: Step 4: Refreshing Expired Access Token
+    Client->>Auth: POST /auth/refresh {refresh_token}
+    Auth->>Sec: decode_token(refresh_token, expected_type='refresh')
+    Sec-->>Auth: Valid claims {sub: user_id, type: 'refresh'}
+    Auth->>DB: Verify User exists and is_active
+    Auth->>Sec: create_access_token() + create_refresh_token()
+    Sec-->>Auth: New JWT Pair
+    Auth-->>Client: 200 OK {access_token, refresh_token}
+```
+
+---
+
+## 5. Database Schema & Entity-Relationship (ER) Diagram
 
 The persistence layer models core domain concepts: user identities, background jobs, detection outputs, and notification alerts.
 
@@ -170,7 +225,7 @@ erDiagram
 
 ---
 
-## 5. Plugging in a Future `YoloDetector`
+## 6. Plugging in a Future `YoloDetector`
 
 One of the template's primary constraints is avoiding ML dependencies during early development. The detector interface ensures that switching to YOLO requires **zero modifications** to existing API routes or business services.
 

@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.limiter import limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
@@ -44,6 +45,15 @@ def setup_test_db() -> Generator[None, None, None]:
     Base.metadata.create_all(bind=engine_test)
     yield
     Base.metadata.drop_all(bind=engine_test)
+
+
+@pytest.fixture(autouse=True)
+def disable_rate_limiting_by_default() -> Generator[None, None, None]:
+    """Disable slowapi rate limiting for unit tests unless explicitly enabled in a test."""
+    original_state = limiter.enabled
+    limiter.enabled = False
+    yield
+    limiter.enabled = original_state
 
 
 @pytest.fixture
