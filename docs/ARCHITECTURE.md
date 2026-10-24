@@ -110,7 +110,67 @@ sequenceDiagram
 
 ---
 
-## 4. Plugging in a Future `YoloDetector`
+## 4. Database Schema & Entity-Relationship (ER) Diagram
+
+The persistence layer models core domain concepts: user identities, background jobs, detection outputs, and notification alerts.
+
+```mermaid
+erDiagram
+    User ||--o{ Job : "submits"
+    User ||--o{ Detection : "owns"
+    User ||--o{ Alert : "receives"
+    Job ||--o{ Detection : "produces"
+    Detection ||--o{ Alert : "triggers"
+
+    User {
+        int id PK
+        string email UK "unique, indexed"
+        string username UK "unique, indexed"
+        string hashed_password
+        string role "user, admin"
+        boolean is_active
+        datetime created_at "UTC timezone-aware"
+    }
+
+    Job {
+        string id PK "UUID string"
+        int user_id FK "nullable, indexed"
+        string type "image, video, stream"
+        string status "pending, running, done, failed (indexed)"
+        int progress "0 to 100"
+        string input_path
+        json result "nullable JSON"
+        text error "nullable text"
+        datetime created_at "UTC timezone-aware"
+        datetime updated_at "UTC timezone-aware"
+    }
+
+    Detection {
+        int id PK
+        int user_id FK "nullable, indexed"
+        string job_id FK "nullable, indexed"
+        string source_type
+        string file_path "nullable"
+        string detector_name
+        int total_count
+        json results "flexible detector output"
+        datetime created_at "UTC timezone-aware, indexed"
+    }
+
+    Alert {
+        int id PK
+        int user_id FK "nullable, indexed"
+        int detection_id FK "nullable, indexed"
+        string level "info, warning, critical"
+        string message
+        boolean is_read
+        datetime created_at "UTC timezone-aware, indexed"
+    }
+```
+
+---
+
+## 5. Plugging in a Future `YoloDetector`
 
 One of the template's primary constraints is avoiding ML dependencies during early development. The detector interface ensures that switching to YOLO requires **zero modifications** to existing API routes or business services.
 
