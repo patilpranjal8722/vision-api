@@ -27,29 +27,30 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Configure engine arguments conditionally based on dialect
-connect_args = {}
 is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
 if is_sqlite:
-    # Allow FastAPI background threads to access the SQLite database
-    connect_args["check_same_thread"] = False
+    engine = create_engine(
+        settings.DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=settings.DEBUG,
+    )
 
-# Create the database engine
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args=connect_args,
-    echo=settings.DEBUG,
-)
-
-# Enforce foreign key constraints for SQLite connections
-if is_sqlite:
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):  # type: ignore[no-untyped-def]
-        """Enable foreign key constraints for SQLite."""
+        """Set SQLite PRAGMAs: foreign keys, WAL journal mode, busy timeout, and synchronous NORMAL."""
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
+else:
+    engine = create_engine(
+        settings.DATABASE_URL,
+        pool_pre_ping=True,
+        echo=settings.DEBUG,
+    )
 
 # SessionLocal is the factory for creating individual database sessions
 SessionLocal = sessionmaker(

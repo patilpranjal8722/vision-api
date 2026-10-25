@@ -1,7 +1,7 @@
 """FastAPI dependency providers for authentication, authorization, and database access."""
 
 from typing import Callable
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ oauth2_scheme = OAuth2PasswordBearer(
 
 
 def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
@@ -53,6 +54,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    request.state.user_id = user.id
     return user
 
 

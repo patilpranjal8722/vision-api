@@ -58,6 +58,7 @@ def process_video_job(
             fps = video_capture.fps
 
             frames_processed = 0
+            frames_failed = 0
             counts: List[int] = []
             timeline: List[Dict[str, Any]] = []
             peak_count = 0
@@ -67,25 +68,31 @@ def process_video_job(
             last_reported_progress = 0
 
             for frame_idx, timestamp_s, pil_image in video_capture.iter_frames(frame_skip=frame_skip):
-                detection_res = detector.detect(pil_image)
-                count = detection_res.total_count
-
                 frames_processed += 1
-                counts.append(count)
-                timeline.append({
-                    "frame_index": frame_idx,
-                    "timestamp_s": timestamp_s,
-                    "total_count": count,
-                })
-
-                if peak_frame is None or count > peak_count:
-                    peak_count = count
-                    peak_frame = {
+                try:
+                    detection_res = detector.detect(pil_image)
+                    count = detection_res.total_count
+                    counts.append(count)
+                    timeline.append({
                         "frame_index": frame_idx,
                         "timestamp_s": timestamp_s,
                         "total_count": count,
-                        "objects": [obj.model_dump() for obj in detection_res.objects],
-                    }
+                    })
+
+                    if peak_frame is None or count > peak_count:
+                        peak_count = count
+                        peak_frame = {
+                            "frame_index": frame_idx,
+                            "timestamp_s": timestamp_s,
+                            "total_count": count,
+                            "objects": [obj.model_dump() for obj in detection_res.objects],
+                        }
+                except Exception as exc:
+                    frames_failed += 1
+                    logger.warning(
+                        f"Frame {frame_idx} detection failed in job {job_id}: {exc}",
+                        extra={"job_id": job_id, "frame_index": frame_idx},
+                    )
 
                 # Update progress based on frame_index vs total_frames
                 current_progress = min(
@@ -104,6 +111,12 @@ def process_video_job(
                     last_progress_time = current_time
                     last_reported_progress = current_progress
 
+            # Fail the whole job only when the failed frames exceed MAX_FRAME_FAILURE_RATIO
+            if frames_processed > 0 and (frames_failed / frames_processed) > settings.MAX_FRAME_FAILURE_RATIO:
+                raise RuntimeError(
+                    f"Processing failed: excessive frame detection errors ({frames_failed}/{frames_processed} failed)"
+                )
+
             # Downsample timeline to at most 500 points
             if len(timeline) > 500:
                 step = len(timeline) / 500.0
@@ -118,6 +131,7 @@ def process_video_job(
                 "summary": {
                     "frames_total": total_frames,
                     "frames_processed": frames_processed,
+                    "frames_failed": frames_failed,
                     "frame_skip": frame_skip,
                     "fps": fps,
                     "duration_seconds": duration_s,

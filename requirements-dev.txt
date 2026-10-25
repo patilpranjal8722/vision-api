@@ -1,0 +1,2 @@
+# Development and security auditing dependencies
+pip-audit==2.9.0

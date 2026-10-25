@@ -597,3 +597,81 @@ The analytics module (`/analytics/summary` and `/analytics/timeseries`) provides
 - **Truncation Protection**: If historical records reach `ANALYTICS_MAX_ROWS`, the summary response includes `"truncated": true`.
 - **Zero-Gap Continuous Timeseries**: `/analytics/timeseries` partitions data into hourly (`interval=hour`) or daily (`interval=day`) buckets, pre-filling all intervals across the date range with zeroes so frontend graphing libraries receive continuous data without interpolation gaps.
 - **Role-Based Scoping**: Standard users receive analytics for their own detections; administrators view platform-wide aggregated metrics.
+
+---
+
+## 10. Middleware and Error Handling
+
+All incoming HTTP and WebSocket traffic traverses an onion-architecture pipeline of middlewares, rate limiters, validation layers, and global exception handlers.
+
+### 10.1 Middleware Pipeline Flowchart
+
+```mermaid
+flowchart TD
+    Client(["HTTP Client / Browser"]) --> ReqID["1. RequestIDMiddleware<br/>(Validate incoming / Gen UUID4, ContextVar, Response Header)"]
+    ReqID --> SecHeaders["2. SecurityHeadersMiddleware<br/>(nosniff, DENY, no-referrer, /auth/* no-store)"]
+    SecHeaders --> BodyLimit["3. RequestBodyLimitMiddleware<br/>(Reject > MAX_REQUEST_BODY_KB with 413, exempt /detect/*)"]
+    BodyLimit --> ReqLog["4. RequestLoggingMiddleware<br/>(Log method, path, status, duration ms, user_id, DEBUG for probes)"]
+    ReqLog --> CORS["5. CORSMiddleware<br/>(Allowed Origins, Credentials, Headers)"]
+    CORS --> RateLimiter["6. SlowAPI Rate Limiter<br/>(Check IP/User limit, exempt /health & /ready)"]
+    
+    RateLimiter -->|Limit Exceeded| Err429["429 Too Many Requests<br/>(Retry-After header + Standard JSON)"]
+    BodyLimit -->|Payload > Limit| Err413["413 Payload Too Large<br/>(Standard JSON)"]
+    
+    RateLimiter --> RouteAuth["7. Route & Authentication<br/>(Extract Bearer Token / Role verification)"]
+    
+    RouteAuth -->|No/Invalid Token| Err401["401 Unauthorized<br/>(Standard JSON)"]
+    RouteAuth -->|Forbidden Role| Err403["403 Forbidden<br/>(Standard JSON)"]
+    RouteAuth --> RouteValidation["8. Request Parsing & Validation<br/>(Pydantic Models)"]
+    
+    RouteValidation -->|Invalid Body/Params| Err422["422 Unprocessable Entity<br/>(Redacted credentials + Standard JSON)"]
+    RouteValidation --> RouteHandler["9. Route Handler & Service Logic"]
+    
+    RouteHandler -->|Not Found| Err404["404 Not Found<br/>(Standard JSON)"]
+    RouteHandler -->|Inference Timeout| Err504["504 Gateway Timeout<br/>(Standard JSON)"]
+    RouteHandler -->|Inference Busy| Err503["503 Service Unavailable<br/>(Standard JSON)"]
+    RouteHandler -->|Unhandled Exception| Err500["500 Internal Server Error<br/>(Sanitized JSON, Traceback logged server-side)"]
+    RouteHandler -->|Success| RespOK(["200 / 201 / 202 Success Response"])
+    
+    Err401 --> ErrorFormat["Global Exception Handlers<br/>Attach request_id & Standard Shape"]
+    Err403 --> ErrorFormat
+    Err404 --> ErrorFormat
+    Err413 --> ErrorFormat
+    Err422 --> ErrorFormat
+    Err429 --> ErrorFormat
+    Err500 --> ErrorFormat
+    Err503 --> ErrorFormat
+    Err504 --> ErrorFormat
+    ErrorFormat --> Client
+    RespOK --> Client
+```
+
+### 10.2 Standard Error Response Shape
+
+Every error response generated across the application strictly conforms to the project's standard error JSON contract:
+
+```json
+{
+  "detail": "Error message or list of validation issues",
+  "request_id": "c1f2e8d3-5b4a-4b9e-8c9a-1a2b3c4d5e6f"
+}
+```
+
+The `request_id` matches the `X-Request-ID` response header, enabling instant correlation across client logs, server log records, and audit events.
+
+### 10.3 Error Classification and Status Codes
+
+| HTTP Status | Error Type / Exception | Source / Trigger | Response Payload Shape | Security & Privacy Protections |
+|---|---|---|---|---|
+| `400 Bad Request` | Client Error | Unsupported file type, bad container header | `{"detail": "...", "request_id": "..."}` | File paths and server internals stripped. |
+| `401 Unauthorized` | `HTTPException(401)` | Missing, expired, or invalid JWT Bearer token | `{"detail": "...", "request_id": "..."}` | Raw tokens never reflected back. |
+| `403 Forbidden` | `HTTPException(403)` | Insufficient privileges (e.g. non-admin accessing admin route) | `{"detail": "...", "request_id": "..."}` | Uniform detail message. |
+| `404 Not Found` | Route / Entity 404 | Unknown URL path or non-existent database ID | `{"detail": "...", "request_id": "..."}` | Catch-all handler catches undefined paths with standard shape. |
+| `405 Method Not Allowed` | Method Error | Disallowed HTTP verb on route | `{"detail": "...", "request_id": "..."}` | Standard format with `request_id`. |
+| `413 Payload Too Large` | `RequestBodyLimitMiddleware` | Request body exceeds `MAX_REQUEST_BODY_KB` (normal routes) | `{"detail": "Request body exceeds limit...", "request_id": "..."}` | Rejection occurs before reading body into memory. |
+| `422 Unprocessable Entity` | `RequestValidationError` | Pydantic schema validation failures | `{"detail": [...], "request_id": "..."}` | Log and response redaction: passwords and tokens scrubbed from input error fields. |
+| `429 Too Many Requests` | `RateLimitExceeded` | SlowAPI rate limit exceeded | `{"detail": "Rate limit exceeded...", "request_id": "..."}` | Includes `Retry-After: 60` response header. |
+| `500 Internal Server Error` | Unhandled `Exception` | Unexpected server crash or bug | `{"detail": "An internal server error occurred.", "request_id": "..."}` | Absolute protection: NO stack traces, SQL queries, file paths, or exception text returned. Trace logged with `logger.exception()`. |
+| `503 Service Unavailable` | `ServerBusy` / Readiness / Detector | Inference queue saturation (`INFERENCE_QUEUE_LIMIT`), missing detector, or `/ready` DB failure | `{"detail": "Server busy, try again shortly", "request_id": "..."}` | Backpressure protection under load. |
+| `504 Gateway Timeout` | `InferenceTimeout` | Inference execution exceeds `INFERENCE_TIMEOUT_SECONDS` | `{"detail": "Inference processing timed out", "request_id": "..."}` | Prevents client hanging. |
+

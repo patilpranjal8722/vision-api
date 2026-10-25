@@ -134,7 +134,9 @@ def login(
     response_model=Token,
     summary="Renew access token using a valid refresh token",
 )
+@limiter.limit(lambda: get_settings().REFRESH_RATE_LIMIT)
 def refresh_token(
+    request: Request,
     refresh_in: RefreshRequest,
     db: Session = Depends(get_db),
 ) -> Token:

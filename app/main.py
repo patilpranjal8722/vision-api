@@ -15,30 +15,30 @@ throughout this file:
    loading model configurations, starting workers). Code after the `yield` runs on
    shutdown (e.g., closing connections, freeing resources).
 
-3. Middleware (`CORSMiddleware`):
-   Middleware intercepts incoming HTTP requests before they reach route handlers,
-   and outgoing responses before they are returned to clients.
-   CORS (Cross-Origin Resource Sharing) headers allow or restrict frontend web apps
-   (such as React, Vue, or Next.js running on different ports or domains) from calling
-   this API.
+3. Middleware Onion Architecture:
+   Middlewares wrap incoming requests and outgoing responses in a clean layered onion:
+   - RequestIDMiddleware: Extracts, generates, and propagates request IDs.
+   - SecurityHeadersMiddleware: Adds nosniff, DENY, no-referrer, and Cache-Control headers.
+   - RequestBodyLimitMiddleware: Guards write endpoints against oversized payloads.
+   - RequestLoggingMiddleware: Logs method, path, status, and duration (DEBUG for probes).
+   - CORSMiddleware: Handles Cross-Origin Resource Sharing.
 
-4. Routers (`app.include_router()`):
-   FastAPI uses APIRouter instances to modularize routes across multiple files
-   instead of writing every endpoint in a single massive file.
-
-5. Rate Limiting (`slowapi`):
-   Limits repetitive requests (such as brute-force password guessing) per client IP address.
+4. Consistent Error Responses:
+   Every error (HTTPException, 422, 429, 413, 500) returns a uniform JSON structure:
+   `{"detail": ..., "request_id": ...}` with the `X-Request-ID` header.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+import uuid
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.routes.alerts import router as alerts_router
 from app.api.routes.analytics import router as analytics_router
@@ -50,13 +50,53 @@ from app.api.routes.test_page import router as test_page_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ws import router as ws_router
 from app.core.config import INSECURE_SECRET_PLACEHOLDER, Settings, get_settings
+from app.core.context import get_request_id
 from app.core.limiter import limiter
 from app.core.logging import get_logger, setup_logging
+from app.core.middleware import (
+    RequestBodyLimitMiddleware,
+    RequestIDMiddleware,
+    RequestLoggingMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.services.detector import get_detector
+from app.services.inference import inference_manager
 from app.services.job_runner import JobRunner, reconcile_stale_jobs
 from app.services.ws_manager import ws_manager
 
 logger = get_logger("vision_api.main")
+
+
+def validate_startup_settings(settings: Settings) -> None:
+    """Validate critical security settings at startup.
+
+    Refuses to start in production (DEBUG=false) if secret key is insecure or wildcard CORS is enabled.
+    """
+    if not settings.DEBUG:
+        if (
+            not settings.SECRET_KEY
+            or settings.SECRET_KEY == INSECURE_SECRET_PLACEHOLDER
+            or len(settings.SECRET_KEY) < 32
+        ):
+            raise RuntimeError(
+                "Production startup failed: SECRET_KEY must be set, must not use default placeholder, "
+                "and must be at least 32 characters long when DEBUG=false."
+            )
+        if "*" in settings.ALLOWED_ORIGINS:
+            raise RuntimeError(
+                "Production startup failed: ALLOWED_ORIGINS must not contain wildcard '*' when DEBUG=false."
+            )
+    else:
+        if (
+            not settings.SECRET_KEY
+            or settings.SECRET_KEY == INSECURE_SECRET_PLACEHOLDER
+            or len(settings.SECRET_KEY) < 32
+        ):
+            logger.warning(
+                "SECURITY WARNING: SECRET_KEY is empty, insecure, or shorter than 32 characters! "
+                "Never use default or weak keys in production. "
+                "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
 
 
 @asynccontextmanager
@@ -65,7 +105,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = get_settings()
 
     # --- Startup phase ---
-    setup_logging(debug=settings.DEBUG)
+    validate_startup_settings(settings)
+    setup_logging(log_level_str=settings.LOG_LEVEL, debug=settings.DEBUG)
+
+    # Initialize shared inference threadpool executor
+    try:
+        inference_manager.init_executor(settings.INFERENCE_WORKERS)
+    except Exception as exc:
+        logger.error(f"Failed to initialize inference manager: {exc}", exc_info=True)
 
     # Store active event loop for thread-safe cross-thread WebSocket pushes
     try:
@@ -73,14 +120,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ws_manager.set_event_loop(loop)
     except Exception as exc:
         logger.warning(f"Could not store running event loop in ws_manager: {exc}")
-
-    # Security check: verify SECRET_KEY is not empty or using the default placeholder
-    if not settings.SECRET_KEY or settings.SECRET_KEY == INSECURE_SECRET_PLACEHOLDER:
-        logger.warning(
-            "SECURITY WARNING: SECRET_KEY is empty or using an insecure placeholder! "
-            "Never use default keys in production. "
-            "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
-        )
 
     # Reconcile stale jobs from any previous server session
     try:
@@ -152,31 +191,73 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             logger.error(f"Error closing detector on shutdown: {exc}", exc_info=True)
 
+    inference_manager.shutdown(wait=False)
     logger.info("Application shutting down gracefully")
 
 
-def rate_limit_custom_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    """Return project standard error JSON when client exceeds rate limits."""
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Return project standard error JSON for HTTPExceptions including 404 and 405."""
+    req_id = get_request_id() or str(uuid.uuid4())
+    headers = dict(exc.headers or {})
+    headers["X-Request-ID"] = req_id
     return JSONResponse(
-        status_code=429,
-        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "request_id": req_id},
+        headers=headers,
     )
 
 
-def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """Return standard 422 response while stripping sensitive password values."""
+async def rate_limit_custom_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return project standard error JSON with Retry-After header when rate limits are exceeded."""
+    req_id = get_request_id() or str(uuid.uuid4())
+    response = JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}", "request_id": req_id},
+        headers={"X-Request-ID": req_id},
+    )
+    if hasattr(request.app.state, "limiter"):
+        response = request.app.state.limiter._inject_headers(
+            response, getattr(request.state, "view_rate_limit", None)
+        )
+    if "Retry-After" not in response.headers:
+        response.headers["Retry-After"] = "60"
+    response.headers["X-Request-ID"] = req_id
+    return response
+
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return standard 422 response with request_id while stripping sensitive credentials."""
+    req_id = get_request_id() or str(uuid.uuid4())
     raw_errors = exc.errors()
     sanitized_errors = []
     for err in raw_errors:
         err_dict = dict(err)
         loc = [str(x).lower() for x in err_dict.get("loc", ())]
-        if any("password" in part for part in loc):
+        if any("password" in part or "token" in part for part in loc):
             err_dict.pop("input", None)
+        elif "input" in err_dict:
+            from app.core.logging import redact_sensitive_data
+            err_dict["input"] = redact_sensitive_data(err_dict["input"])
         sanitized_errors.append(err_dict)
 
     return JSONResponse(
         status_code=422,
-        content={"detail": jsonable_encoder(sanitized_errors)},
+        content={"detail": jsonable_encoder(sanitized_errors), "request_id": req_id},
+        headers={"X-Request-ID": req_id},
+    )
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch unhandled server errors, log tracebacks server-side, and return sanitized 500 JSON."""
+    req_id = get_request_id() or str(uuid.uuid4())
+    logger.exception(
+        f"Unhandled exception while processing {request.method} {request.url.path}: {exc}",
+        extra={"request_id": req_id},
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": req_id},
+        headers={"X-Request-ID": req_id},
     )
 
 
@@ -185,25 +266,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
         settings = get_settings()
 
+    # Refuse startup in production under unsafe configurations
+    validate_startup_settings(settings)
+
+    # Determine OpenAPI documentation endpoints based on ENABLE_DOCS setting
+    docs_url = "/docs" if settings.ENABLE_DOCS else None
+    redoc_url = "/redoc" if settings.ENABLE_DOCS else None
+    openapi_url = "/openapi.json" if settings.ENABLE_DOCS else None
+
     # Initialize the FastAPI app instance with metadata for OpenAPI documentation
     application = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
         description="Reusable FastAPI backend template for computer-vision hackathons.",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
         lifespan=lifespan,
     )
 
-    # Attach slowapi rate limiter to app state and register exception handlers
+    # Attach slowapi rate limiter to app state and register uniform exception handlers
     application.state.limiter = limiter
     application.state.detector = None
     application.state.job_runner = None
+
+    application.add_exception_handler(StarletteHTTPException, http_exception_handler)
     application.add_exception_handler(RateLimitExceeded, rate_limit_custom_handler)
     application.add_exception_handler(RequestValidationError, validation_exception_handler)
+    application.add_exception_handler(Exception, unhandled_exception_handler)
 
-    # Configure CORS middleware
+    # Add middlewares (executed in reverse order: RequestID -> SecurityHeaders -> BodyLimit -> Logging -> CORS)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_ORIGINS,
@@ -211,6 +303,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.add_middleware(RequestLoggingMiddleware)
+    application.add_middleware(RequestBodyLimitMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(RequestIDMiddleware)
 
     # Register API route modules
     application.include_router(health_router)

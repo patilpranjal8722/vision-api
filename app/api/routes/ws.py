@@ -18,6 +18,7 @@ from app.models.detection import Detection
 from app.models.user import User
 from app.schemas.detection import DetectionResult
 from app.services.alert_service import evaluate_detection
+from app.services.inference import InferenceTimeout, ServerBusy, run_inference
 from app.services.ws_manager import ws_manager
 
 logger = get_logger("vision_api.ws")
@@ -217,9 +218,15 @@ async def ws_stream_endpoint(websocket: WebSocket) -> None:
                 skipped_counter = 0
 
                 try:
-                    result: DetectionResult = await run_in_threadpool(detector.detect, curr_img)
+                    active_detector = getattr(websocket.app.state, "detector", detector) or detector
+                    result: DetectionResult = await run_inference(active_detector, curr_img)
+                except (InferenceTimeout, ServerBusy) as inf_exc:
+                    logger.warning(f"Stream frame inference issue: {inf_exc}")
+                    await websocket.send_json({"type": "error", "message": str(inf_exc)})
+                    continue
                 except Exception as det_exc:
                     logger.error(f"Detector error on stream frame: {det_exc}", exc_info=True)
+                    await websocket.send_json({"type": "error", "message": f"Detection failed: {det_exc}"})
                     continue
 
                 # Stream alert evaluation with cooldown

@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     ANALYTICS_MAX_ROWS: int = 5000
     ANALYTICS_MAX_RANGE_DAYS: int = 90
 
+    # Step 7: Hardening, Rate Limiting & Inference Protection Settings
+    LOG_LEVEL: str = "INFO"
+    MAX_REQUEST_BODY_KB: int = 1024
+    DEFAULT_RATE_LIMIT: str = "120/minute"
+    UPLOAD_RATE_LIMIT: str = "20/minute"
+    REFRESH_RATE_LIMIT: str = "10/minute"
+    INFERENCE_TIMEOUT_SECONDS: float = 30.0
+    INFERENCE_WORKERS: int = 2
+    INFERENCE_QUEUE_LIMIT: int = 8
+    MAX_FRAME_FAILURE_RATIO: float = 0.5
+    ENABLE_DOCS: bool = True
+    SECURITY_HEADERS_ENABLED: bool = True
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_allowed_origins(cls, value: Union[str, List[str]]) -> List[str]:

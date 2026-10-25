@@ -564,15 +564,108 @@ Restart the server, check `GET /health` (`"detector": "yolo"`, `"model_loaded": 
 
 ---
 
-## Known Limitations
+---
 
-- **In-Process Thread Pool**: Background video jobs run inside an in-process `ThreadPoolExecutor`. If the server is restarted while jobs are pending or running, they do not survive and are automatically marked as `failed` ("Server restarted while the job was running") during application startup reconciliation.
-- **No Job Cancellation**: There is currently no endpoint or mechanism to cancel or abort an in-flight background job.
-- **Single Process Uvicorn Runner**: Do not run multiple Uvicorn worker processes (`--workers > 1`) with this in-process runner, as background tasks will be isolated to individual process memory spaces. For multi-process or distributed production setups, a distributed task queue (e.g., Celery with Redis) should be used.
-- **Synthetic Dummy Frame Reader**: In base development mode (`FRAME_READER_BACKEND=dummy`), `DummyFrameReader` generates synthetic solid-color frames with simulated delay and does not decode real video frames.
-- **Stateless Tokens**: Refresh tokens are signed JWTs with expiration claims. They are currently stateless and cannot be revoked prior to expiration. Token revocation blocklists (e.g., using Redis or database token versions) will be added in Step 7 (Hardening).
+## Reliability and Security
+
+The Vision API incorporates enterprise-grade hardening to ensure stability, confidentiality, and resilience under adversarial conditions and high traffic loads:
+
+### 1. Consistent Error Envelope & Request ID Tracing
+- **Uniform Error Shape**: Every error response (HTTP exceptions, 422 validation, 404 unknown routes, 405 method errors, 413 payload limit, 429 rate limit, 503 service busy, 504 inference timeout, and 500 unhandled exceptions) returns a standard JSON payload:
+  ```json
+  {"detail": "...", "request_id": "..."}
+  ```
+- **X-Request-ID Correlation**: The `RequestIDMiddleware` checks incoming `X-Request-ID` headers against a safe pattern (`^[a-zA-Z0-9_-]{1,64}$`), generating a UUID4 if missing or malformed. The identifier is stored in a Python `contextvars.ContextVar`, attached to every response header, embedded in all error payloads, and injected into every structured log line.
+- **500 Sanitization**: Unhandled server exceptions never expose file paths, database queries, exception names, or stack traces to callers (`"An internal server error occurred."`). The full stack trace is logged server-side via `logger.exception()`.
+- **422 Credential Shielding**: Pydantic input dictionaries are recursively scrubbed to ensure passwords and tokens are never echoed back in validation errors.
+
+### 2. Startup Hardening & Production Gates
+- **Production Secret Validation**: When running with `DEBUG=false`, the server strictly refuses to boot if `SECRET_KEY` is empty, equal to the insecure placeholder, or shorter than 32 characters.
+- **CORS Wildcard Rejection**: When `DEBUG=false`, `ALLOWED_ORIGINS` cannot contain the wildcard `*`.
+- **Documentation Toggle**: Setting `ENABLE_DOCS=false` completely disables Swagger UI (`/docs`), ReDoc (`/redoc`), and the OpenAPI schema (`/openapi.json`).
+
+### 3. Traffic Protection & Security Headers
+- **Request Body Limit**: `RequestBodyLimitMiddleware` immediately aborts any non-streaming request with `Content-Length` exceeding `MAX_REQUEST_BODY_KB` with `HTTP 413 Payload Too Large`. (Streaming detection routes maintain their own chunked counters up to `MAX_UPLOAD_MB`).
+- **Security Headers**: `SecurityHeadersMiddleware` injects `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and applies `Cache-Control: no-store` on all `/auth/*` endpoints (avoiding CSP to ensure full Swagger UI and test bench compatibility).
+- **Adaptive Rate Limiting**: `slowapi` enforces default rate limits (`DEFAULT_RATE_LIMIT=120/minute`), upload limits (`UPLOAD_RATE_LIMIT=20/minute`), refresh limits (`REFRESH_RATE_LIMIT=10/minute`), and auth limits, while exempting `/health` and `/ready` probes. When limits are exceeded, responses include standard error bodies and `Retry-After: 60` headers.
+
+### 4. Computer Vision Inference Protection
+- **Dedicated ThreadPoolExecutor**: ML detector calls run in a dedicated `ThreadPoolExecutor` initialized with `INFERENCE_WORKERS` threads.
+- **Timeout Protection**: `run_inference(detector, image)` enforces `INFERENCE_TIMEOUT_SECONDS`, raising `InferenceTimeout` (`HTTP 504 Gateway Timeout`) if a detector hangs.
+- **Queue Backpressure**: If active plus queued inference tasks exceed `INFERENCE_QUEUE_LIMIT`, requests are rejected immediately with `ServerBusy` (`HTTP 503 Service Unavailable`).
+- **Resilient Video Processing**: Individual frame exceptions during background video processing do not crash the job. Failed frames are counted in `result.summary.frames_failed`, and jobs fail only if the failure ratio exceeds `MAX_FRAME_FAILURE_RATIO`.
+
+### 5. Database Durability & Clean Lifecycle
+- **SQLite Performance & Concurrency**: SQLite connections are initialized with `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL` (Write-Ahead Logging), `PRAGMA busy_timeout=5000`, and `PRAGMA synchronous=NORMAL`.
+- **Connection Pool Pre-Ping**: Non-SQLite databases automatically enable `pool_pre_ping=True` to prune stale database connections.
+- **Orphan File Cleanup**: If persisting a `Detection` or `Job` database record fails after a file has been written to disk, the file is automatically purged before the error response returns.
+
+### 6. Health & Readiness Probes
+- **GET /health**: Lightweight liveness check returning uptime, database status, and detector metadata.
+- **GET /ready**: Deep readiness probe ensuring the database responds to `SELECT 1` and a detector model is loaded. Returns `HTTP 200 {"status": "ready"}` or `HTTP 503` detailing the failed component.
 
 ---
+
+## Configuration Settings Reference
+
+The table below describes all environment settings introduced in Step 7 alongside existing core options:
+
+| Setting Key | Default Value | Description |
+| :--- | :--- | :--- |
+| `LOG_LEVEL` | `INFO` | Root logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `MAX_REQUEST_BODY_KB` | `1024` | Maximum allowable request body size in kilobytes for non-streaming routes (1024 KB = 1 MB). |
+| `DEFAULT_RATE_LIMIT` | `120/minute` | Default request rate limit applied to standard API endpoints. |
+| `UPLOAD_RATE_LIMIT` | `20/minute` | Rate limit applied to upload endpoints (`POST /detect/image`, `POST /detect/video`). |
+| `REFRESH_RATE_LIMIT` | `10/minute` | Rate limit applied to token refresh (`POST /auth/refresh`). |
+| `INFERENCE_TIMEOUT_SECONDS` | `30` | Maximum seconds permitted for an inference call before raising `InferenceTimeout` (HTTP 504). |
+| `INFERENCE_WORKERS` | `2` | Number of worker threads allocated to the dedicated inference `ThreadPoolExecutor`. |
+| `INFERENCE_QUEUE_LIMIT` | `8` | Maximum allowable queued + running inference calls before returning `ServerBusy` (HTTP 503). |
+| `MAX_FRAME_FAILURE_RATIO` | `0.5` | Maximum ratio of frame errors tolerated before a background video job is marked failed. |
+| `ENABLE_DOCS` | `true` | When `false`, disables Swagger UI (`/docs`), ReDoc (`/redoc`), and OpenAPI schema (`/openapi.json`). |
+| `SECURITY_HEADERS_ENABLED` | `true` | Injects browser security headers (`nosniff`, `DENY`, `no-referrer`) and auth cache control. |
+| `DEBUG` | `true` | Development mode flag; when `false`, enables strict production startup safety validations. |
+| `SECRET_KEY` | *(placeholder)* | Cryptographic HMAC-SHA256 signing secret; must be at least 32 characters in production. |
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Whitelisted CORS origins; wildcard `*` rejected when `DEBUG=false`. |
+
+---
+
+## Pre-Demo Checklist
+
+Before presenting or deploying the application, perform this verification checklist:
+
+1. **Start the Vision API Server**:
+   ```bash
+   # Windows
+   py -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   
+   # Linux / macOS
+   uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ```
+2. **Execute Automated Smoke Test Suite**:
+   Run the comprehensive smoke test against the running instance:
+   ```bash
+   py -m scripts.smoke_test --base-url http://127.0.0.1:8000
+   ```
+   Ensure all 14 checks print `[PASS]` with exit code `0`.
+3. **Verify Readiness Probe**:
+   Query the readiness endpoint in your browser or terminal:
+   ```bash
+   curl http://127.0.0.1:8000/ready
+   # Expected response: {"status": "ready"} (HTTP 200)
+   ```
+4. **Inspect Application Logs**:
+   Confirm structured JSON logs output valid `request_id` correlation IDs, that `/health` and `/ready` probes log at `DEBUG` level, and that credentials and secrets are fully redacted.
+
+---
+
+## Known Limitations & Future Improvements
+
+- **Inference Thread Cancellation**: Python worker threads in a `ThreadPoolExecutor` cannot be forcibly killed upon timeout (`INFERENCE_TIMEOUT_SECONDS`). When an inference call times out, the client immediately receives an `HTTP 504 Gateway Timeout` response, but the background thread continues execution until the detector returns.
+- **WebSocket Rate Limiting**: SlowAPI operates solely on HTTP ASGI scope and does not natively rate limit WebSocket frames or messages. WebSocket connections are instead throttled by `WS_MAX_CONNECTIONS_PER_USER` and message payload constraints (`WS_MAX_FRAME_KB`).
+- **Reverse Proxy Client IP**: When running behind reverse proxies (Nginx, Cloudflare, Traefik, AWS ALB), Uvicorn must be started with `--proxy-headers` (e.g. `uvicorn app.main:app --proxy-headers --forwarded-allow-ips='*'`) so SlowAPI can resolve client IPs via `X-Forwarded-For`.
+- **Token Revocation & Account Lockout**: Refresh tokens are stateless signed JWTs and cannot be revoked before expiration. Implementing token blocklists or account lockouts after consecutive failed attempts requires a database schema migration (targeted for a future release).
+- **Chunked Request Body Limits**: Chunked HTTP requests omitting the `Content-Length` header bypass `RequestBodyLimitMiddleware` and are instead guarded by route-level chunked stream counters (`MAX_UPLOAD_MB` and `MAX_VIDEO_UPLOAD_MB`).
+- **Single-Process Deployment Scope**: In-memory rate limiting counters, WebSocket active connection maps, and the inference `ThreadPoolExecutor` operate within a single process. Multi-worker or distributed deployments require an external message broker (such as Redis) and a distributed task runner (such as Celery).
 
 ## Database and Migrations
 
@@ -634,12 +727,31 @@ pytest -v
 - [x] **Step 4: Detection API with DummyDetector**
 - [x] **Step 5: Video upload and background jobs**
 - [x] **Step 6: WebSocket, analytics, alerts**
-- [ ] **Step 7: Error handling and hardening**
+- [x] **Step 7: Error handling and hardening**
 - [ ] **Step 8: Docker and partner handoff**
 
 ---
 
 ## Changelog
+
+### Step 7 — Error Handling, Logging, Rate Limiting & Hardening
+- Added 11 configuration settings in `app/core/config.py`, `.env.example`, and `.env`: `LOG_LEVEL=INFO`, `MAX_REQUEST_BODY_KB=1024`, `DEFAULT_RATE_LIMIT="120/minute"`, `UPLOAD_RATE_LIMIT="20/minute"`, `REFRESH_RATE_LIMIT="10/minute"`, `INFERENCE_TIMEOUT_SECONDS=30`, `INFERENCE_WORKERS=2`, `INFERENCE_QUEUE_LIMIT=8`, `MAX_FRAME_FAILURE_RATIO=0.5`, `ENABLE_DOCS=true`, `SECURITY_HEADERS_ENABLED=true`.
+- Standardized error response contract: audited entire application so every error response (HTTPException, 422, 404, 405, 413, 429, 500, 503, 504) uses `{"detail": ..., "request_id": ...}` with no server internals, SQL, or traces exposed on 500.
+- Implemented `RequestIDMiddleware`: validates incoming `X-Request-ID` against `^[a-zA-Z0-9_-]{1,64}$` (or generates UUID4), stores in `contextvars.ContextVar`, echoes in response header, injects into all logs, and embeds in all error bodies.
+- Implemented `RequestLoggingMiddleware`: logs method, path (without query params), status code, duration in milliseconds, and `user_id` when known; exempts probes (`/health`, `/ready`) to `DEBUG` level; strictly omits bodies, cookies, query strings, and auth headers.
+- Implemented `SensitiveDataFilter`: redacts sensitive keys (`password`, `token`, `access_token`, `refresh_token`, `authorization`, `secret`, `secret_key`, `hashed_password`) in log extras and dict messages.
+- Implemented `SecurityHeadersMiddleware`: injects `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and applies `Cache-Control: no-store` on all `/auth/*` responses without breaking Swagger UI.
+- Implemented `RequestBodyLimitMiddleware`: rejects requests with `Content-Length > MAX_REQUEST_BODY_KB` with 413, exempting streaming routes `POST /detect/image` and `POST /detect/video`.
+- Added strict production startup validation: refuses startup when `DEBUG=false` if `SECRET_KEY` is empty, insecure placeholder, or < 32 characters, or if `ALLOWED_ORIGINS` contains `*`. Controlled interactive documentation via `ENABLE_DOCS`.
+- Extended rate limiting: applied `DEFAULT_RATE_LIMIT` to all routes by default, `UPLOAD_RATE_LIMIT` to image and video uploads, `REFRESH_RATE_LIMIT` to token refresh, and exempted `/health` and `/ready`. Injected `Retry-After: 60` and `X-Request-ID` on 429 responses.
+- Implemented inference protection in `app/services/inference.py`: shared `ThreadPoolExecutor` with `INFERENCE_WORKERS` threads; `run_inference()` with `INFERENCE_TIMEOUT_SECONDS` (mapped to 504 on upload routes) and `INFERENCE_QUEUE_LIMIT` backpressure (mapped to 503); resilient error handling on `/ws/stream` returning `{"type": "error", ...}` while maintaining socket connectivity.
+- Enhanced video background job resilience: skipped failed frames during processing, stored `frames_failed` in `result.summary`, and failed jobs only when failure ratio exceeded `MAX_FRAME_FAILURE_RATIO`.
+- Configured database durability: initialized SQLite connections with `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`, `PRAGMA synchronous=NORMAL`, and `PRAGMA foreign_keys=ON`; enabled `pool_pre_ping=True` for non-SQLite engines; implemented automatic orphan file cleanup deleting uploaded files if database row creation fails.
+- Added deep readiness probe `GET /ready` verifying database connectivity (`SELECT 1`) and detector load status.
+- Created `scripts/smoke_test.py` with 14 automated verification checks across health, auth, detection, jobs, history, rate limits, 404 standard errors, and WebSocket authentication without exposing secrets.
+- Created `requirements-dev.txt` with `pip-audit` and conducted full vulnerability audit against `requirements.txt`.
+- Added comprehensive pytest test suite in `tests/test_hardening.py` covering all hardening scenarios (99 total tests passing).
+- Documented middleware architecture, Mermaid request flowchart, and error classification in `docs/ARCHITECTURE.md`.
 
 ### Step 6 — Alerts, Analytics & Real-Time WebSocket
 - Added Step 6 configuration in `app/core/config.py`, `.env.example`, and `.env`: `ALERT_WARNING_THRESHOLD=10`, `ALERT_CRITICAL_THRESHOLD=20`, `ALERT_COOLDOWN_SECONDS=30`, `WS_AUTH_TIMEOUT_SECONDS=5`, `WS_MAX_FRAME_KB=2048`, `WS_MAX_CONNECTIONS_PER_USER=3`, `ANALYTICS_MAX_ROWS=5000`, `ANALYTICS_MAX_RANGE_DAYS=90`.

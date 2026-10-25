@@ -1,3 +1,4 @@
+from pathlib import Path
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
@@ -5,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.config import Settings, get_settings
+from app.core.limiter import limiter
 from app.core.logging import get_logger
 from app.db.session import get_db
 from app.models.detection import Detection
@@ -13,6 +15,7 @@ from app.models.user import User
 from app.schemas.detection import DetectionOut
 from app.schemas.job import JobSubmitOut
 from app.services.image_service import validate_and_save_image
+from app.services.inference import InferenceTimeout, ServerBusy, run_inference
 from app.services.video_service import validate_and_save_video
 
 router = APIRouter(prefix="/detect", tags=["Detection"])
@@ -25,6 +28,7 @@ logger = get_logger("vision_api.detect")
     status_code=status.HTTP_202_ACCEPTED,
     summary="Upload video and submit background detection job",
 )
+@limiter.limit(lambda: get_settings().UPLOAD_RATE_LIMIT)
 def detect_video(
     request: Request,
     file: UploadFile = File(...),
@@ -45,6 +49,7 @@ def detect_video(
     - Returns HTTP 503 if detector is not loaded/available.
     - Limits active (pending/running) jobs per user to MAX_ACTIVE_JOBS_PER_USER (HTTP 429).
     - Submits job to ThreadPoolExecutor (or processes inline if JOB_RUNNER_INLINE is True).
+    - Cleans up orphan uploaded video file if database insertion fails.
     - Returns HTTP 202 Accepted with {job_id, status, progress, created_at}.
     """
     detector = getattr(request.app.state, "detector", None)
@@ -76,28 +81,36 @@ def detect_video(
     # 1. Validate video container and save to disk
     saved_video_path = validate_and_save_video(file, settings=settings)
 
-    # 2. Create Job entity
-    actual_frame_skip = frame_skip if frame_skip is not None else settings.FRAME_SKIP
-    job = Job(
-        id=str(uuid.uuid4()),
-        user_id=current_user.id,
-        type="video",
-        status="pending",
-        progress=0,
-        input_path=saved_video_path,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+    # 2. Create Job entity with orphan cleanup protection
+    try:
+        actual_frame_skip = frame_skip if frame_skip is not None else settings.FRAME_SKIP
+        job = Job(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            type="video",
+            status="pending",
+            progress=0,
+            input_path=saved_video_path,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
 
-    # 3. Submit to job runner
-    runner = getattr(request.app.state, "job_runner", None)
-    if runner is not None:
-        runner.submit(job.id, frame_skip=actual_frame_skip)
-    else:
-        from app.services.job_runner import JobRunner
-        fallback_runner = JobRunner(request.app, settings)
-        fallback_runner.submit(job.id, frame_skip=actual_frame_skip)
+        # 3. Submit to job runner
+        runner = getattr(request.app.state, "job_runner", None)
+        if runner is not None:
+            runner.submit(job.id, frame_skip=actual_frame_skip)
+        else:
+            from app.services.job_runner import JobRunner
+            fallback_runner = JobRunner(request.app, settings)
+            fallback_runner.submit(job.id, frame_skip=actual_frame_skip)
+    except Exception:
+        # Prevent orphan video upload file if database commit or enqueueing fails
+        try:
+            Path(saved_video_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
     return JobSubmitOut(
         job_id=job.id,
@@ -113,7 +126,8 @@ def detect_video(
     status_code=status.HTTP_201_CREATED,
     summary="Upload image and perform object detection",
 )
-def detect_image(
+@limiter.limit(lambda: get_settings().UPLOAD_RATE_LIMIT)
+async def detect_image(
     request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
@@ -125,7 +139,8 @@ def detect_image(
     - Validates MIME type, file size (streaming 413 cutoff), and Pillow image decoding.
     - Saves image to disk under a generated UUID filename in UPLOAD_DIR/images/.
     - Returns 503 if detector is not loaded/available.
-    - Runs detector.detect in a threadpool (plain def handler) with safe 500 error reporting.
+    - Runs inference via run_inference() protecting against queue saturation (503) and timeout (504).
+    - Cleans up orphan uploaded image file if inference or database commit fails.
     - Persists detection metadata, counts, and bounding box JSON in the database.
     """
     detector = getattr(request.app.state, "detector", None)
@@ -138,28 +153,48 @@ def detect_image(
     # 1. Validate, decode to RGB, and persist upload to disk
     rgb_image, file_path = validate_and_save_image(file, settings=settings)
 
-    # 2. Run object detection inference safely
     try:
-        detection_result = detector.detect(rgb_image)
-    except Exception as exc:
-        logger.error(f"Inference execution failed: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Detection inference failed",
-        )
+        # 2. Run object detection inference safely with timeout & concurrency controls
+        try:
+            detection_result = await run_inference(detector, rgb_image)
+        except ServerBusy as exc:
+            logger.warning(f"Inference queue saturated: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Server busy, try again shortly",
+            )
+        except InferenceTimeout as exc:
+            logger.warning(f"Inference execution timed out: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Inference timeout",
+            )
+        except Exception as exc:
+            logger.error(f"Inference execution failed: {exc}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Detection inference failed",
+            )
 
-    # 3. Store Detection record in database
-    detection_record = Detection(
-        user_id=current_user.id,
-        source_type="image",
-        file_path=file_path,
-        detector_name=detection_result.detector_name,
-        total_count=detection_result.total_count,
-        results=detection_result.model_dump(),
-    )
-    db.add(detection_record)
-    db.commit()
-    db.refresh(detection_record)
+        # 3. Store Detection record in database
+        detection_record = Detection(
+            user_id=current_user.id,
+            source_type="image",
+            file_path=file_path,
+            detector_name=detection_result.detector_name,
+            total_count=detection_result.total_count,
+            results=detection_result.model_dump(),
+        )
+        db.add(detection_record)
+        db.commit()
+        db.refresh(detection_record)
+    except Exception:
+        # Clean up uploaded image on disk if inference or database saving fails (no orphan uploads)
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
     # 4. Evaluate alerts (non-blocking for image detection failure)
     try:
