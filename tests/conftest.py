@@ -11,10 +11,22 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from pathlib import Path
+from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def setup_test_upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate uploaded files to a temporary folder during tests."""
+    temp_dir = tmp_path / "test_uploads"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(temp_dir))
+    return temp_dir
 
 # Use an in-memory SQLite database with StaticPool so all connections share the same memory DB
 TEST_DATABASE_URL = "sqlite:///:memory:"
@@ -37,6 +49,17 @@ TestingSessionLocal = sessionmaker(
     autoflush=False,
     bind=engine_test,
 )
+
+
+@pytest.fixture(autouse=True)
+def setup_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure test defaults: inline runner, 0ms frame delay, in-memory SessionLocal."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "JOB_RUNNER_INLINE", True)
+    monkeypatch.setattr(settings, "DUMMY_FRAME_DELAY_MS", 0)
+    monkeypatch.setattr("app.db.session.SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr("app.services.job_runner.SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr("app.api.routes.ws.SessionLocal", TestingSessionLocal)
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +95,9 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     app = create_app()
 
     def override_get_db() -> Generator[Session, None, None]:
+        db_session.expire_all()
         yield db_session
+        db_session.expire_all()
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:

@@ -8,7 +8,7 @@ or:
 
 import getpass
 import sys
-from app.core.security import hash_password
+from app.core.security import hash_password, validate_password_strength
 from app.db.session import SessionLocal
 from app.models.user import User
 
@@ -53,16 +53,22 @@ def main() -> None:
                 print("Promotion cancelled.")
             return
 
-        # New admin creation: prompt for secure password with getpass
-        password = getpass.getpass("Enter admin password (min 8 characters): ")
-        if len(password) < 8:
-            print("Error: Password must be at least 8 characters long.")
-            sys.exit(1)
+        # New admin creation: prompt for secure password with getpass until valid
+        while True:
+            password = getpass.getpass("Enter admin password: ")
+            unmet_rules = validate_password_strength(password)
+            if unmet_rules:
+                print("Error: Password does not meet security requirements:")
+                for rule in unmet_rules:
+                    print(f"  - {rule}")
+                continue
 
-        password_confirm = getpass.getpass("Confirm admin password: ")
-        if password != password_confirm:
-            print("Error: Passwords do not match.")
-            sys.exit(1)
+            password_confirm = getpass.getpass("Confirm admin password: ")
+            if password != password_confirm:
+                print("Error: Passwords do not match. Please try again.\n")
+                continue
+
+            break
 
         admin_user = User(
             email=email,

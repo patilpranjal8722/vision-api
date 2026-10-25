@@ -15,7 +15,18 @@ def test_health_check_returns_200_and_database_ok(client: TestClient) -> None:
     assert response.status_code == 200
 
     data = response.json()
-    expected_keys = {"status", "app_name", "version", "timestamp", "model_loaded", "database"}
+    expected_keys = {
+        "status",
+        "app_name",
+        "version",
+        "timestamp",
+        "detector",
+        "model_loaded",
+        "detector_is_placeholder",
+        "database",
+        "active_jobs",
+        "ws_connections",
+    }
     assert expected_keys.issubset(data.keys()), f"Missing keys in response: {expected_keys - set(data.keys())}"
 
     # Verify key values
@@ -24,7 +35,11 @@ def test_health_check_returns_200_and_database_ok(client: TestClient) -> None:
     assert data["database"] == "ok"
     assert data["app_name"] == settings.APP_NAME
     assert data["version"] == settings.APP_VERSION
-    assert data["model_loaded"] is False
+    assert data["detector"] == "dummy"
+    assert data["model_loaded"] is True
+    assert data["detector_is_placeholder"] is True
+    assert data["active_jobs"] == 0
+    assert data["ws_connections"] == 0
 
     # Verify timestamp is a valid ISO 8601 string
     parsed_timestamp = datetime.fromisoformat(data["timestamp"])
@@ -51,6 +66,24 @@ def test_health_check_degraded_when_database_fails() -> None:
         data = response.json()
         assert data["status"] == "degraded"
         assert data["database"] == "error"
-        assert data["model_loaded"] is False
+        assert data["model_loaded"] is True
+        assert data["detector"] == "dummy"
 
     app.dependency_overrides.clear()
+
+
+def test_health_check_degraded_when_detector_fails_to_load() -> None:
+    """Test that /health returns status 'degraded' when detector is None or failed to load."""
+    app = create_app()
+
+    with TestClient(app) as client:
+        # Simulate failed detector load on app state
+        app.state.detector = None
+        response = client.get("/health")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["detector"] is None
+        assert data["model_loaded"] is False
+        assert data["detector_is_placeholder"] is False

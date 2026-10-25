@@ -80,32 +80,128 @@ The system is organized into four primary architectural tiers:
 
 ---
 
-## 3. End-to-End Request Flow
+## 3. End-to-End Request Flow (POST /detect/image)
 
-The following sequence diagram details how an image detection request traverses the system:
+The following sequence diagram details how an image detection request traverses the system (validate, save, detect, store, respond):
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client
-    participant Router as API Route (app/api/routes)
-    participant Service as DetectionService (app/services)
+    participant Router as API Route (POST /detect/image)
+    participant Dep as Dependencies (Auth, DB, Settings)
+    participant Svc as Image Service (validate_and_save_image)
+    participant Disk as File Storage (uploads/images/)
     participant Detector as BaseDetector (Dummy / YOLO)
     participant DB as Database Session (app/db)
-    participant Storage as File Storage (uploads/)
 
-    Client->>Router: POST /api/v1/detect (Image File)
-    Note over Router: Validates MIME type & payload
-    Router->>Service: process_image(file, current_user)
-    Service->>Storage: save_file(file)
-    Storage-->>Service: stored_file_path
-    Service->>Detector: predict(stored_file_path)
-    Note over Detector: Runs inference via Dummy or YOLO
-    Detector-->>Service: List[DetectionResult] (boxes, labels, confidence)
-    Service->>DB: save_detection_record(metadata, detections)
-    DB-->>Service: saved_record
-    Service-->>Router: DetectionResponseDTO
-    Router-->>Client: 200 OK (JSON with bounding boxes & stats)
+    Client->>Router: POST /detect/image (Multipart Form, Bearer Token)
+    Router->>Dep: get_current_user(token) & get_db()
+    Dep-->>Router: Authenticated User & DB Session
+
+    Note over Router: Verify app.state.detector is ready (HTTP 503 if None)
+
+    Router->>Svc: validate_and_save_image(file, settings)
+    Note over Svc: 1. Validate MIME type in ALLOWED_IMAGE_TYPES (HTTP 415)
+    Note over Svc: 2. Stream read in chunks; abort on MAX_UPLOAD_MB (HTTP 413)
+    Note over Svc: 3. Reject empty files (HTTP 400)
+    Note over Svc: 4. Verify bytes with Pillow img.verify() (HTTP 400 if bad)
+    Note over Svc: 5. Reopen, check MAX_IMAGE_DIMENSION, convert to RGB
+    Note over Svc: 6. Resolve extension from Pillow format, generate UUID
+
+    Svc->>Disk: Write original bytes to uploads/images/<uuid4>.<ext>
+    Disk-->>Svc: Persisted relative file path
+    Svc-->>Router: (rgb_image, file_path)
+
+    Router->>Detector: detect(rgb_image)
+    Note over Detector: Execute inference in threadpool<br/>(measure inference_ms, filter by CONFIDENCE_THRESHOLD)
+    Detector-->>Router: DetectionResult (objects, total_count, inference_ms)
+
+    Router->>DB: INSERT Detection(user_id, source_type="image", file_path, results)
+    DB-->>Router: Persisted Detection record
+
+    Router-->>Client: HTTP 201 Created (DetectionOut JSON)
+```
+
+### 3.2 Asynchronous Video Processing Flow (POST /detect/video & Polling GET /jobs/{job_id})
+
+The following sequence diagram details asynchronous video submission, thread pool execution, and status polling:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Router as API Route (POST /detect/video)
+    participant Dep as Dependencies (Auth, DB, Settings)
+    participant Svc as Video Service (validate_and_save_video)
+    participant Disk as File Storage (uploads/videos/)
+    participant DB as Database Session (app/db)
+    participant Runner as Job Runner (ThreadPoolExecutor)
+    participant Worker as Background Worker (process_video_job)
+    participant Reader as Frame Reader (Dummy / OpenCV)
+    participant Detector as BaseDetector (Dummy / YOLO)
+
+    %% 1. Submission
+    Client->>Router: POST /detect/video (Multipart Form, Bearer Token)
+    Router->>Dep: get_current_user(token) & get_db()
+    Dep-->>Router: Authenticated User & DB Session
+    Note over Router: Verify detector ready (503 if None)<br/>Verify active jobs limit (429 if >= MAX_ACTIVE_JOBS)
+
+    Router->>Svc: validate_and_save_video(file, settings)
+    Note over Svc: 1. Validate MIME in ALLOWED_VIDEO_TYPES (415)<br/>2. Inspect container signature (ftyp, webm, avi) (400)<br/>3. Stream chunks; enforce MAX_VIDEO_UPLOAD_MB (413)
+    Svc->>Disk: Stream bytes to uploads/videos/<uuid4>.<ext>
+    Disk-->>Svc: Persisted relative video path
+    Svc-->>Router: video_path
+
+    Router->>DB: INSERT Job(type="video", status="pending", progress=0, input_path)
+    DB-->>Router: Persisted Job record (job_id)
+
+    Router->>Runner: submit(job_id, frame_skip)
+    Runner-->>Router: Queued in ThreadPoolExecutor
+    Router-->>Client: HTTP 202 Accepted {job_id, status: "pending", progress: 0}
+
+    %% 2. Background Execution
+    Runner->>Worker: Execute in worker thread (process_video_job)
+    Note over Worker: Worker creates dedicated SessionLocal()
+    Worker->>DB: UPDATE Job SET status="running", progress=0
+    Worker->>Reader: open(video_path)
+    Reader-->>Worker: Video stream metadata (total_frames, fps, width, height)
+
+    loop Every sampled frame (iter_frames)
+        Reader-->>Worker: (frame_idx, timestamp_s, pil_rgb_image)
+        Worker->>Detector: detect(pil_rgb_image)
+        Detector-->>Worker: DetectionResult
+        Note over Worker: Track peak frame & downsampled timeline
+        opt Periodic progress update (every 5% or 1 sec)
+            Worker->>DB: UPDATE Job SET progress=X, updated_at=NOW()
+        end
+    end
+
+    Worker->>DB: UPDATE Job SET status="done", progress=100, result=JSON
+    Worker->>DB: INSERT Detection(source_type="video", job_id, peak_count, results)
+    Note over Worker: Close reader & close worker DB session
+
+    %% 3. Polling
+    loop Polling until completed
+        Client->>Router: GET /jobs/{job_id} (Bearer Token)
+        Router->>DB: SELECT Job WHERE id=job_id
+        DB-->>Router: Job record
+        Router-->>Client: HTTP 200 OK {status: "running" | "done", progress, result: null | JSON}
+    end
+```
+
+### 3.3 Job Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: POST /detect/video (uploaded & validated)
+    pending --> running: Worker thread picks up task
+    pending --> failed: Server restarted (startup reconciliation)
+    running --> running: Progress updates (0-99%)
+    running --> done: All frames decoded & Detection stored
+    running --> failed: Frame decode error, timeout, or server restart
+    done --> [*]
+    failed --> [*]
 ```
 
 ---
@@ -225,58 +321,279 @@ erDiagram
 
 ---
 
-## 6. Plugging in a Future `YoloDetector`
+## 6. Detector Architecture & Class Hierarchy
 
-One of the template's primary constraints is avoiding ML dependencies during early development. The detector interface ensures that switching to YOLO requires **zero modifications** to existing API routes or business services.
+The detector package in `app/services/detector/` adheres strictly to the Dependency Inversion Principle. The web application, routes, and services depend exclusively on the abstract `BaseDetector` contract.
 
-### Interface Definition
+### Class Diagram
+
+```mermaid
+classDiagram
+    class BaseDetector {
+        <<abstract>>
+        +str name
+        +bool is_placeholder
+        +bool is_loaded
+        +load() None
+        +detect(image: Image) DetectionResult*
+        +close() None
+    }
+    class DummyDetector {
+        +str name = "dummy"
+        +float confidence_threshold
+        +bool is_placeholder = True
+        +bool is_loaded
+        +load() None
+        +detect(image: Image) DetectionResult
+        +close() None
+    }
+    class YoloDetector {
+        +str name = "yolo"
+        +str model_path
+        +float confidence_threshold
+        +bool is_placeholder = False
+        +bool is_loaded
+        +load() None
+        +detect(image: Image) DetectionResult
+        +close() None
+    }
+    BaseDetector <|-- DummyDetector
+    BaseDetector <|-- YoloDetector
+```
+
+### Interface Definition (`app/services/detector/base.py`)
 ```python
 from abc import ABC, abstractmethod
-from typing import List
-from pydantic import BaseModel
-
-class BoundingBox(BaseModel):
-    x_min: float
-    y_min: float
-    x_max: float
-    y_max: float
-    confidence: float
-    label: str
+from PIL import Image
+from app.schemas.detection import DetectionResult
 
 class BaseDetector(ABC):
-    @abstractmethod
-    def load_model(self) -> None:
-        """Load model weights into memory/GPU."""
-        pass
+    name: str = "base"
+    _is_loaded: bool = False
+
+    @property
+    def is_placeholder(self) -> bool:
+        return False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._is_loaded
+
+    def load(self) -> None:
+        """Load model weights into memory. Executed once during startup lifespan."""
+        self._is_loaded = True
 
     @abstractmethod
-    def predict(self, image_path: str) -> List[BoundingBox]:
-        """Perform object detection on an image path."""
+    def detect(self, image: Image.Image) -> DetectionResult:
+        """Perform object detection on a decoded RGB PIL Image."""
+        pass
+
+    def close(self) -> None:
+        """Clean up handles or GPU memory on application shutdown."""
         pass
 ```
 
 ### Swappable Implementations
 
-1. **DummyDetector (Current Phase)**:
-   - Does not import PyTorch, torchvision, or Ultralytics.
-   - Generates mock bounding boxes (e.g., label `"person"` with 0.95 confidence) to verify data flow, WebSocket alerts, and UI rendering.
+1. **DummyDetector (`app/services/detector/dummy.py`)**:
+   - Zero ML/GPU/NumPy dependencies.
+   - Generates deterministic simulated detections (seeded via SHA-256 hash of image dimensions and raw pixel bytes).
+   - Bounds every box inside image coordinates (`0 <= x1 < x2 <= width`, `0 <= y1 < y2 <= height`).
+   - Filters candidate detections by `CONFIDENCE_THRESHOLD` and measures `inference_ms` with `time.perf_counter`.
 
-2. **YoloDetector (Future ML Phase)**:
-   - Installs packages from `requirements-cv.txt`.
-   - Loads weights from `models_store/yolov8n.pt`.
-   - Implements the exact same `predict(image_path)` signature.
+2. **YoloDetector (`app/services/detector/yolo_detector.py`)**:
+   - Clean stub raising `NotImplementedError` until the ML partner implements it.
+   - Module top-level is completely free of ML imports (lazy import inside `load()`).
+   - Ready for drop-in activation with `requirements-cv.txt` and model weights in `models_store/`.
 
-### Factory Pattern Resolution
-A detector factory resolves the active implementation based on `.env`:
+### Factory Pattern Resolution (`app/services/detector/factory.py`)
+A detector factory resolves the active implementation based on `Settings`:
 
 ```python
-def get_detector(settings: Settings = Depends(get_settings)) -> BaseDetector:
-    if settings.DETECTOR_BACKEND == "dummy":
-        return DummyDetector()
-    elif settings.DETECTOR_BACKEND == "yolo":
-        from app.services.yolo_detector import YoloDetector
-        return YoloDetector(weights_path=settings.MODEL_PATH)
-    raise ValueError(f"Unknown DETECTOR_BACKEND: {settings.DETECTOR_BACKEND}")
+def get_detector(settings: Optional[Settings] = None) -> BaseDetector:
+    if settings is None:
+        settings = get_settings()
+    backend = (settings.DETECTOR_BACKEND or "").strip().lower()
+    if backend == "dummy":
+        return DummyDetector(confidence_threshold=settings.CONFIDENCE_THRESHOLD)
+    elif backend == "yolo":
+        return YoloDetector(
+            model_path=settings.MODEL_PATH,
+            confidence_threshold=settings.CONFIDENCE_THRESHOLD,
+        )
+    raise ValueError(f"Invalid DETECTOR_BACKEND '{settings.DETECTOR_BACKEND}'. Supported options: dummy, yolo.")
 ```
 
-Because the router and service receive `BaseDetector` via FastAPI's dependency injection (`Depends(get_detector)`), updating `.env` to `DETECTOR_BACKEND=yolo` activates the real model without touching a single route or service line.
+During application lifespan startup in `app/main.py`, the detector is initialized and loaded once, stored on `app.state.detector`, and gracefully closed during shutdown.
+
+---
+
+## 7. Video Frame Reader Architecture & Class Hierarchy
+
+The frame reader package in `app/services/video/` abstracts video decoding behind the `BaseFrameReader` interface, mirroring the detector design. The application core remains 100% free of heavy native OpenCV or FFmpeg dependencies.
+
+### Class Diagram
+
+```mermaid
+classDiagram
+    class BaseFrameReader {
+        <<abstract>>
+        +float fps*
+        +int total_frames*
+        +int width*
+        +int height*
+        +open(path: str) BaseFrameReader*
+        +close() None*
+        +iter_frames(frame_skip: int) Generator*
+    }
+    class DummyFrameReader {
+        +float fps = 25.0
+        +int total_frames
+        +int width = 640
+        +int height = 480
+        +int delay_ms
+        +open(path: str) DummyFrameReader
+        +close() None
+        +iter_frames(frame_skip: int) Generator
+    }
+    class OpenCVFrameReader {
+        +float fps
+        +int total_frames
+        +int width
+        +int height
+        +open(path: str) OpenCVFrameReader
+        +close() None
+        +iter_frames(frame_skip: int) Generator
+    }
+    BaseFrameReader <|-- DummyFrameReader
+    BaseFrameReader <|-- OpenCVFrameReader
+```
+
+### Interface Contract (`app/services/video/base.py`)
+```python
+class BaseFrameReader(ABC):
+    @abstractmethod
+    def open(self, path: str) -> "BaseFrameReader":
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def fps(self) -> float:
+        pass
+
+    @property
+    @abstractmethod
+    def total_frames(self) -> int:
+        pass
+
+    @abstractmethod
+    def iter_frames(
+        self, frame_skip: int = 1
+    ) -> Generator[Tuple[int, float, Image.Image], None, None]:
+        pass
+```
+
+### Swappable Implementations
+1. **DummyFrameReader (`app/services/video/dummy.py`)**:
+   - Zero OpenCV/FFmpeg dependencies.
+   - Derives frame counts (between 60 and 300) from file size.
+   - Generates synthetic solid-color PIL Images whose RGB values vary by frame index.
+   - Sleeps for `DUMMY_FRAME_DELAY_MS` between frames so progress is visible in UI/polling.
+2. **OpenCVFrameReader (`app/services/video/opencv_reader.py`)**:
+   - Clean stub raising `NotImplementedError` until the partner implements it.
+   - Lazily imports `cv2` inside `open()`, keeping module top-level clean.
+
+---
+
+## 9. Real-Time Alerts, WebSockets & Analytics Architecture (Step 6)
+
+### 9.1 Alert Flow Sequence Diagram
+
+When detections occur via image upload (`POST /detect/image`), asynchronous video processing (`JobRunner`), or live stream frames (`WS /ws/stream`), the `evaluate_detection()` service inspects `total_count` against `ALERT_WARNING_THRESHOLD` and `ALERT_CRITICAL_THRESHOLD`. If triggered, an `Alert` record is persisted in the database, and the event is broadcast thread-safely to active WebSocket alert clients.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Client / Worker
+    participant DetectionFlow as Detection Source (Image / Video / Stream)
+    participant AlertSvc as AlertService (evaluate_detection)
+    participant DB as Database Session
+    participant WSManager as WebSocketManager
+    actor WSClient as Alert Subscriber (Owner / Admin)
+
+    DetectionFlow->>AlertSvc: evaluate_detection(db, detection)
+    alt total_count >= ALERT_CRITICAL_THRESHOLD
+        AlertSvc->>AlertSvc: level = "critical"
+    else total_count >= ALERT_WARNING_THRESHOLD
+        AlertSvc->>AlertSvc: level = "warning"
+    else Below thresholds
+        AlertSvc-->>DetectionFlow: None (no alert)
+    end
+
+    alt Alert Triggered
+        AlertSvc->>DB: INSERT INTO alerts (user_id, detection_id, level, message, is_read=False)
+        DB-->>AlertSvc: Alert committed
+        AlertSvc->>WSManager: push_alert_threadsafe(alert_dict, user_id)
+        Note over AlertSvc,WSManager: Thread-safe dispatch via asyncio.run_coroutine_threadsafe
+        WSManager->>WSClient: send_json({"type": "alert", "alert": {...}})
+        AlertSvc-->>DetectionFlow: Alert record
+    end
+```
+
+### 9.2 Real-Time Stream Flow Sequence Diagram (WS /ws/stream)
+
+The live frame ingestion endpoint (`/ws/stream`) uses a producer-consumer "latest frame wins" design with two concurrent coroutines. This prevents backpressure and frame queues from lagging when inference takes longer than frame delivery.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as WebSocket Client
+    participant Endpoint as WS /ws/stream
+    participant Reader as Frame Reader Coroutine
+    participant Slot as Single-Frame Slot
+    participant Worker as Frame Processor Coroutine
+    participant Detector as BaseDetector (ThreadPool)
+    participant AlertSvc as AlertService (Cooldown Protected)
+
+    Client->>Endpoint: Connect /ws/stream (Origin Verified)
+    Endpoint->>Client: Accept WebSocket
+    Client->>Endpoint: {"type": "auth", "token": "<access_token>"}
+    Endpoint->>Client: {"type": "auth_ok"}
+
+    par Reader Coroutine (Ingestion)
+        loop Client Streams Binary Frames
+            Client->>Reader: Binary Frame Bytes (JPEG/PNG)
+            alt Frame > WS_MAX_FRAME_KB
+                Reader->>Client: {"type": "error", "message": "Frame size exceeds limit"}
+            else Unreadable Bytes (Pillow failure)
+                Reader->>Client: {"type": "error", "message": "Failed to decode image frame"}
+            else Valid Frame
+                Reader->>Slot: Put (frame_id, PIL.Image) [Overwrites old unprocessed frame]
+                Note over Reader,Slot: Increment skipped_counter if slot was occupied
+            end
+        end
+    and Processor Coroutine (Inference)
+        loop Continuous Polling
+            Slot->>Worker: Grab latest frame & reset skipped count
+            Worker->>Detector: run_in_threadpool(detector.detect, image)
+            Detector-->>Worker: DetectionResult
+            Worker->>Client: {"type": "detections", "frame_id": n, "skipped_since_last": k, "result": {...}}
+            alt Alert Threshold Met & Cooldown Expired (ALERT_COOLDOWN_SECONDS)
+                Worker->>AlertSvc: Persist stream Detection & create Alert
+                AlertSvc-->>Worker: Alert created & pushed to /ws/alerts
+            end
+        end
+    end
+```
+
+### 9.3 Analytics Architecture
+
+The analytics module (`/analytics/summary` and `/analytics/timeseries`) provides high-performance metrics aggregation across detection history:
+- **Zero-Engine Overhead**: Detections within the requested time range (validated up to `ANALYTICS_MAX_RANGE_DAYS`, defaulting to 7 days) are fetched up to `ANALYTICS_MAX_ROWS` and aggregated in memory in Python. This ensures portability between SQLite and PostgreSQL without database-specific date functions.
+- **Truncation Protection**: If historical records reach `ANALYTICS_MAX_ROWS`, the summary response includes `"truncated": true`.
+- **Zero-Gap Continuous Timeseries**: `/analytics/timeseries` partitions data into hourly (`interval=hour`) or daily (`interval=day`) buckets, pre-filling all intervals across the date range with zeroes so frontend graphing libraries receive continuous data without interpolation gaps.
+- **Role-Based Scoping**: Standard users receive analytics for their own detections; administrators view platform-wide aggregated metrics.

@@ -10,6 +10,7 @@ PyJWT==2.15.1
 argon2-cffi==25.1.0
 email-validator==2.3.0
 slowapi==0.1.10
+Pillow==13.0.0
 
 # Pinned sub-dependencies
 annotated-doc==0.0.5

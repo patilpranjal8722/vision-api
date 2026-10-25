@@ -16,14 +16,53 @@ Beginner-friendly explanation:
    used to obtain fresh token pairs.
 """
 
+import string
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
+
+PASSWORD_MIN_LENGTH: int = 8
+PASSWORD_MAX_LENGTH: int = 128
+
+
+def validate_password_strength(password: str) -> List[str]:
+    """Validate password strength against complexity rules.
+
+    Rules:
+    - At least 8 characters (PASSWORD_MIN_LENGTH)
+    - At most 128 characters (PASSWORD_MAX_LENGTH)
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 digit
+    - At least 1 special character (string.punctuation)
+
+    Args:
+        password: The plaintext password string to evaluate.
+
+    Returns:
+        A list of friendly error messages for any unmet rules.
+        An empty list indicates the password meets all strength requirements.
+    """
+    errors: List[str] = []
+    if len(password) < PASSWORD_MIN_LENGTH:
+        errors.append(f"Password must be at least {PASSWORD_MIN_LENGTH} characters long")
+    if len(password) > PASSWORD_MAX_LENGTH:
+        errors.append(f"Password must be at most {PASSWORD_MAX_LENGTH} characters long")
+    if not any(c.isupper() for c in password):
+        errors.append("Password must contain at least one uppercase letter")
+    if not any(c.islower() for c in password):
+        errors.append("Password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in password):
+        errors.append("Password must contain at least one digit")
+    if not any(c in string.punctuation for c in password):
+        errors.append("Password must contain at least one special character")
+    return errors
+
 
 # Initialize the Argon2 password hasher
 password_hasher = PasswordHasher()

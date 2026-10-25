@@ -1,7 +1,13 @@
 """User schemas for request validation and response serialization."""
 
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.core.security import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    validate_password_strength,
+)
 
 
 class UserCreate(BaseModel):
@@ -19,10 +25,20 @@ class UserCreate(BaseModel):
         description="3-30 characters, letters, digits, and underscores only.",
     )
     password: str = Field(
-        min_length=8,
-        max_length=128,
-        description="Password must be between 8 and 128 characters.",
+        description=(
+            f"Password must be between {PASSWORD_MIN_LENGTH} and {PASSWORD_MAX_LENGTH} characters long "
+            "and contain at least one uppercase letter, one lowercase letter, one digit, and one special character."
+        ),
     )
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        """Validate password strength rules."""
+        unmet_rules = validate_password_strength(v)
+        if unmet_rules:
+            raise ValueError("; ".join(unmet_rules))
+        return v
 
 
 class UserOut(BaseModel):
