@@ -1,0 +1,1753 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "vision-api",
+    "description": "Reusable FastAPI backend template for computer-vision hackathons.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health Check (Liveness)",
+        "description": "Return application operational status, metadata, model readiness, database health, and WS connections.\n\nPerforms a lightweight `SELECT 1` query to verify database connectivity,\ninspects app.state.detector for model readiness, counts active jobs, and counts open WebSockets.\nIf the database is unreachable or the detector failed to load, the endpoint\nreports status 'degraded' without crashing.",
+        "operationId": "get_health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness Check",
+        "description": "Return 200 with {'status': 'ready'} only when database responds to SELECT 1 and detector is loaded.\n\nOtherwise returns HTTP 503 Service Unavailable detailing which dependency failed.",
+        "operationId": "get_ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Get Ready Ready Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Register a new user",
+        "description": "Register a new user account.\n\n- Assigned role is strictly enforced as 'user'.\n- Rejects duplicate email or username with HTTP 409 Conflict.\n- Password is encrypted with Argon2id before database storage.",
+        "operationId": "register_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Log in and retrieve JWT access and refresh tokens",
+        "description": "Authenticate with username/email and password.\n\n- Supports logging in via either username or email in the 'username' form field.\n- Uses constant-time dummy hash verification when a user is absent to mitigate timing attacks.\n- Returns generic 'Incorrect credentials' for both invalid username and password.\n- Rejects inactive user accounts with HTTP 401.",
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_login_auth_login_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Renew access token using a valid refresh token",
+        "description": "Validate a refresh token and return a fresh token pair.\n\n- Rejects access tokens used on this endpoint with HTTP 401.\n- Rejects expired or malformed tokens.",
+        "operationId": "refresh_token_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/me": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Retrieve current user profile",
+        "description": "Return profile information for the currently authenticated user.",
+        "operationId": "get_current_user_profile_users_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/users/": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "List all users (Admin only)",
+        "description": "Retrieve all registered users. Restricted to users with the 'admin' role.",
+        "operationId": "list_users_users__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Users Users  Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/detect/video": {
+      "post": {
+        "tags": [
+          "Detection"
+        ],
+        "summary": "Upload video and submit background detection job",
+        "description": "Upload a video file and submit an asynchronous detection job.\n\n- Validates MIME type, streaming file size limit (HTTP 413), and container magic bytes.\n- Saves video under UUID filename in UPLOAD_DIR/videos/.\n- Returns HTTP 503 if detector is not loaded/available.\n- Limits active (pending/running) jobs per user to MAX_ACTIVE_JOBS_PER_USER (HTTP 429).\n- Submits job to ThreadPoolExecutor (or processes inline if JOB_RUNNER_INLINE is True).\n- Cleans up orphan uploaded video file if database insertion fails.\n- Returns HTTP 202 Accepted with {job_id, status, progress, created_at}.",
+        "operationId": "detect_video_detect_video_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "frame_skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 60,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sampling stride in frames (1 to 60; defaults to FRAME_SKIP)",
+              "title": "Frame Skip"
+            },
+            "description": "Sampling stride in frames (1 to 60; defaults to FRAME_SKIP)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_detect_video_detect_video_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmitOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/detect/image": {
+      "post": {
+        "tags": [
+          "Detection"
+        ],
+        "summary": "Upload image and perform object detection",
+        "description": "Upload an image file, validate dimensions/format, run detection, and save results.\n\n- Validates MIME type, file size (streaming 413 cutoff), and Pillow image decoding.\n- Saves image to disk under a generated UUID filename in UPLOAD_DIR/images/.\n- Returns 503 if detector is not loaded/available.\n- Runs inference via run_inference() protecting against queue saturation (503) and timeout (504).\n- Cleans up orphan uploaded image file if inference or database commit fails.\n- Persists detection metadata, counts, and bounding box JSON in the database.",
+        "operationId": "detect_image_detect_image_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_detect_image_detect_image_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/detect/history": {
+      "get": {
+        "tags": [
+          "Detection"
+        ],
+        "summary": "List detection history with pagination",
+        "description": "Retrieve detection records ordered newest first.\n\n- Standard users only see their own detections.\n- Administrators can view all system detection records.",
+        "operationId": "get_detection_history_detect_history_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number (1-indexed)",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number (1-indexed)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Items per page (max 100)",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Items per page (max 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DetectionOut"
+                  },
+                  "title": "Response Get Detection History Detect History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/detect/{detection_id}": {
+      "get": {
+        "tags": [
+          "Detection"
+        ],
+        "summary": "Retrieve a specific detection by ID",
+        "description": "Retrieve a single detection record by its database ID.\n\n- Accessible if the record belongs to the requesting user or if user is an admin.\n- Returns 404 if not found or unauthorized to prevent disclosing record existence.",
+        "operationId": "get_detection_by_id_detect__detection_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "detection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Detection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Retrieve job status and result",
+        "description": "Retrieve processing job status, progress, errors, and inference results.\n\n- Accessible if the job belongs to the requesting user or if user is an admin.\n- Returns 404 if not found or unauthorized to prevent disclosing job existence.\n- Result payload is populated only when status is 'done'; otherwise null.",
+        "operationId": "get_job_by_id_jobs__job_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "List background jobs with pagination and status filter",
+        "description": "Retrieve job records ordered newest first.\n\n- Standard users only see their own jobs.\n- Administrators can view all background jobs.\n- Supports optional filtering by job status.",
+        "operationId": "list_jobs_jobs_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number (1-indexed)",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number (1-indexed)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Items per page (max 100)",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Items per page (max 100)"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by status ('pending', 'running', 'done', 'failed')",
+              "title": "Status"
+            },
+            "description": "Filter jobs by status ('pending', 'running', 'done', 'failed')"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobOut"
+                  },
+                  "title": "Response List Jobs Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "List alerts with pagination and optional filtering",
+        "description": "Retrieve alerts ordered newest first.\n\n- Standard users only see their own alerts.\n- Administrators can see alerts for all users.\n- Supports filtering by level and read status.",
+        "operationId": "list_alerts_alerts_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number (1-indexed)",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number (1-indexed)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Items per page (max 100)",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Items per page (max 100)"
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by alert level ('warning' or 'critical')",
+              "title": "Level"
+            },
+            "description": "Filter by alert level ('warning' or 'critical')"
+          },
+          {
+            "name": "is_read",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by read status",
+              "title": "Is Read"
+            },
+            "description": "Filter by read status"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlertOut"
+                  },
+                  "title": "Response List Alerts Alerts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts/unread-count": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Get count of unread alerts",
+        "description": "Return the total number of unread alerts.\n\n- Standard users receive the count of their own unread alerts.\n- Administrators receive the total unread count across all users.",
+        "operationId": "get_unread_count_alerts_unread_count_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCountOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/alerts/{alert_id}/read": {
+      "patch": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Mark a specific alert as read",
+        "description": "Mark an alert as read.\n\n- Accessible by the alert owner or an administrator.\n- Attempting to mark another user's alert returns HTTP 404.",
+        "operationId": "mark_alert_as_read_alerts__alert_id__read_patch",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Alert Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts/read-all": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Mark all caller alerts as read",
+        "description": "Mark all unread alerts belonging to the caller as read.",
+        "operationId": "mark_all_alerts_read_alerts_read_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadAllOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/analytics/summary": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get aggregated detection and alert analytics summary",
+        "description": "Retrieve summarized statistics across detections and alerts.\n\n- Standard users see only their own data.\n- Administrators see statistics aggregated across all users.",
+        "operationId": "get_analytics_summary_analytics_summary_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Start date (ISO format, default: 7 days ago)",
+              "title": "Date From"
+            },
+            "description": "Start date (ISO format, default: 7 days ago)"
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "End date (ISO format, default: now)",
+              "title": "Date To"
+            },
+            "description": "End date (ISO format, default: now)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsSummaryOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/analytics/timeseries": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Get timeseries buckets for detections",
+        "description": "Retrieve timeseries detection metrics bucketed by hour or day.\n\nEmpty buckets are zero-filled to eliminate gaps in frontend charts.",
+        "operationId": "get_analytics_timeseries_analytics_timeseries_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Bucket interval: 'hour' or 'day'",
+              "default": "hour",
+              "title": "Interval"
+            },
+            "description": "Bucket interval: 'hour' or 'day'"
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Start date (ISO format, default: 7 days ago)",
+              "title": "Date From"
+            },
+            "description": "Start date (ISO format, default: 7 days ago)"
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "End date (ISO format, default: now)",
+              "title": "Date To"
+            },
+            "description": "End date (ISO format, default: now)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TimeseriesBucket"
+                  },
+                  "title": "Response Get Analytics Timeseries Analytics Timeseries Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws-test": {
+      "get": {
+        "tags": [
+          "Developer Tools"
+        ],
+        "summary": "Manual developer test page for WebSocket feeds",
+        "description": "Serve self-contained test bench for /ws/alerts and /ws/stream.\n\nReturns 404 in production when DEBUG=false.",
+        "operationId": "get_ws_test_page_ws_test_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AlertOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "detection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detection Id"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "is_read": {
+            "type": "boolean",
+            "title": "Is Read"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "level",
+          "message",
+          "is_read",
+          "created_at"
+        ],
+        "title": "AlertOut",
+        "description": "Schema for alert responses."
+      },
+      "AnalyticsSummaryOut": {
+        "properties": {
+          "total_detections": {
+            "type": "integer",
+            "title": "Total Detections"
+          },
+          "total_objects": {
+            "type": "integer",
+            "title": "Total Objects"
+          },
+          "avg_count": {
+            "type": "number",
+            "title": "Avg Count"
+          },
+          "max_count": {
+            "type": "integer",
+            "title": "Max Count"
+          },
+          "counts_by_source": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts By Source"
+          },
+          "alerts_by_level": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Alerts By Level"
+          },
+          "top_labels": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Top Labels"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_detections",
+          "total_objects",
+          "avg_count",
+          "max_count",
+          "counts_by_source",
+          "alerts_by_level",
+          "top_labels",
+          "truncated"
+        ],
+        "title": "AnalyticsSummaryOut",
+        "description": "Aggregated summary of detection and alert statistics."
+      },
+      "Body_detect_image_detect_image_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_detect_image_detect_image_post"
+      },
+      "Body_detect_video_detect_video_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_detect_video_detect_video_post"
+      },
+      "Body_login_auth_login_post": {
+        "properties": {
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^password$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "title": "Password"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "format": "password",
+            "title": "Client Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "Body_login_auth_login_post"
+      },
+      "BoundingBox": {
+        "properties": {
+          "x1": {
+            "type": "number",
+            "title": "X1",
+            "description": "Top-left X pixel coordinate"
+          },
+          "y1": {
+            "type": "number",
+            "title": "Y1",
+            "description": "Top-left Y pixel coordinate"
+          },
+          "x2": {
+            "type": "number",
+            "title": "X2",
+            "description": "Bottom-right X pixel coordinate"
+          },
+          "y2": {
+            "type": "number",
+            "title": "Y2",
+            "description": "Bottom-right Y pixel coordinate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x1",
+          "y1",
+          "x2",
+          "y2"
+        ],
+        "title": "BoundingBox",
+        "description": "Bounding box pixel coordinates (top-left x1, y1 and bottom-right x2, y2)."
+      },
+      "DetectedObject": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Class label name (e.g., person, car)"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "description": "Confidence score between 0.0 and 1.0"
+          },
+          "bbox": {
+            "$ref": "#/components/schemas/BoundingBox",
+            "description": "Bounding box pixel coordinates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "confidence",
+          "bbox"
+        ],
+        "title": "DetectedObject",
+        "description": "An individual detected object entity."
+      },
+      "DetectionOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "detector_name": {
+            "type": "string",
+            "title": "Detector Name"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "file_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Path"
+          },
+          "results": {
+            "$ref": "#/components/schemas/DetectionResult"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_type",
+          "detector_name",
+          "total_count",
+          "results",
+          "created_at"
+        ],
+        "title": "DetectionOut",
+        "description": "API response schema for stored detection records."
+      },
+      "DetectionResult": {
+        "properties": {
+          "objects": {
+            "items": {
+              "$ref": "#/components/schemas/DetectedObject"
+            },
+            "type": "array",
+            "title": "Objects",
+            "description": "List of detected objects"
+          },
+          "total_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Count",
+            "description": "Total number of detected objects"
+          },
+          "image_width": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Image Width",
+            "description": "Image width in pixels"
+          },
+          "image_height": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Image Height",
+            "description": "Image height in pixels"
+          },
+          "inference_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Inference Ms",
+            "description": "Inference latency in milliseconds"
+          },
+          "detector_name": {
+            "type": "string",
+            "title": "Detector Name",
+            "description": "Name of the detector model used"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra",
+            "description": "Flexible metadata dictionary for detector-specific additions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_count",
+          "image_width",
+          "image_height",
+          "inference_ms",
+          "detector_name"
+        ],
+        "title": "DetectionResult",
+        "description": "Complete inference results returned by any detector implementation."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "JobOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Unique job identifier UUID"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id",
+            "description": "Owning user ID"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Job type ('image', 'video', 'stream')"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Current status ('pending', 'running', 'done', 'failed')"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress",
+            "description": "Processing progress percentage (0 to 100)"
+          },
+          "input_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Path",
+            "description": "Path to stored input file"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result",
+            "description": "Inference summary, timeline, and peak frame results (only when status is 'done')"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Sanitized error description on failure"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Creation timestamp"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Last status update timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "status",
+          "progress",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobOut",
+        "description": "Detailed job status and result schema."
+      },
+      "JobSubmitOut": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id",
+            "description": "Unique job identifier UUID"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Initial job status ('pending')"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress",
+            "description": "Initial progress percentage (0 to 100)",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Timestamp of submission"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "status",
+          "created_at"
+        ],
+        "title": "JobSubmitOut",
+        "description": "Response returned upon submitting an asynchronous processing job (HTTP 202)."
+      },
+      "ReadAllOut": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "updated_count": {
+            "type": "integer",
+            "title": "Updated Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "updated_count"
+        ],
+        "title": "ReadAllOut",
+        "description": "Schema for read-all alerts response."
+      },
+      "RefreshRequest": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshRequest",
+        "description": "Schema for token refresh requests."
+      },
+      "TimeseriesBucket": {
+        "properties": {
+          "bucket_start": {
+            "type": "string",
+            "title": "Bucket Start"
+          },
+          "detections": {
+            "type": "integer",
+            "title": "Detections"
+          },
+          "avg_count": {
+            "type": "number",
+            "title": "Avg Count"
+          },
+          "max_count": {
+            "type": "integer",
+            "title": "Max Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bucket_start",
+          "detections",
+          "avg_count",
+          "max_count"
+        ],
+        "title": "TimeseriesBucket",
+        "description": "Single time-bucket within an analytics timeseries."
+      },
+      "Token": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token"
+        ],
+        "title": "Token",
+        "description": "Schema returned upon successful authentication containing access and refresh tokens."
+      },
+      "UnreadCountOut": {
+        "properties": {
+          "unread_count": {
+            "type": "integer",
+            "title": "Unread Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "unread_count"
+        ],
+        "title": "UnreadCountOut",
+        "description": "Schema for unread alert count response."
+      },
+      "UserCreate": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 3,
+            "pattern": "^[a-zA-Z0-9_]+$",
+            "title": "Username",
+            "description": "3-30 characters, letters, digits, and underscores only."
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "Password must be between 8 and 128 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character."
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "username",
+          "password"
+        ],
+        "title": "UserCreate",
+        "description": "Schema for user registration requests.\n\nNote: The `role` field is deliberately excluded to prevent privilege escalation.\nAll users registered via this schema are assigned the 'user' role by default."
+      },
+      "UserOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "username",
+          "role",
+          "is_active",
+          "created_at"
+        ],
+        "title": "UserOut",
+        "description": "Public user response schema.\n\nExcludes sensitive credentials such as `hashed_password`."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2PasswordBearer": {
+        "type": "oauth2",
+        "flows": {
+          "password": {
+            "scopes": {},
+            "tokenUrl": "/auth/login"
+          }
+        }
+      }
+    }
+  }
+}

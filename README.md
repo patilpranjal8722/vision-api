@@ -6,6 +6,27 @@ The template provides an end-to-end operational backend (validation, storage, as
 
 ---
 
+## Table of Contents
+
+- [Tech Stack](#tech-stack)
+- [Architecture & Documentation Links](#architecture--documentation-links)
+- [What This Repo Does Not Contain](#what-this-repo-does-not-contain)
+- [Folder Structure](#folder-structure)
+- [Quick Start](#quick-start)
+  - [Path 1: Local Python Virtualenv (SQLite)](#path-1-local-python-virtualenv-sqlite)
+  - [Path 2: Docker Compose (SQLite)](#path-2-docker-compose-sqlite)
+  - [Path 3: Docker Compose with PostgreSQL](#path-3-docker-compose-with-postgresql)
+- [Container Administration & Persistent Volumes](#container-administration--persistent-volumes)
+- [Authentication & Role-Based Access Control](#authentication--role-based-access-control)
+- [Detection API](#detection-api)
+- [Video Upload & Background Jobs](#video-upload--background-jobs)
+- [Alerts, Analytics & WebSockets](#alerts-analytics--websockets)
+- [Running Tests](#running-tests)
+- [Roadmap](#roadmap)
+- [Changelog](#changelog)
+
+---
+
 ## Tech Stack
 
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (High-performance async ASGI web framework)
@@ -20,20 +41,29 @@ The template provides an end-to-end operational backend (validation, storage, as
 - **File Uploads**: `python-multipart`
 - **Testing**: [pytest](https://docs.pytest.org/) and [HTTPX](https://www.python-httpx.org/) (FastAPI `TestClient`)
 - **Logging**: Structured JSON logging via standard library `logging`
+- **Containerization & CI**: Docker (`python:3.12-slim`), Docker Compose v2, GitHub Actions CI
 
 ---
 
-## Architecture Summary
+## Architecture & Documentation Links
 
-The project is built on a clean layered architecture following the Dependency Inversion Principle:
+Detailed guides for teammates and frontend integrators:
 
-1. **API Routes (`app/api/routes/`)**: Handles HTTP requests, parameter validation, rate limiting, and status codes.
-2. **Security & Auth Layer (`app/core/security.py`, `app/api/deps.py`)**: Argon2id password hashing, JWT issue/decode, and role verification (`user` vs `admin`).
-3. **Services (`app/services/`)**: Orchestrates business logic, file storage, and detector execution.
-4. **Detector Abstraction (`app/services/`)**: Standard interface (`BaseDetector`) allowing seamless switching between `DummyDetector` (mock data, no GPU) and `YoloDetector` without altering routes or services.
-5. **Database & Storage (`app/db/`, `app/models/`, `uploads/`)**: Relational database persistence (User, Job, Detection, Alert) and local/cloud storage management.
+- 📐 **System Architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Layered architecture diagrams, request flows, middleware onion, security model, and database ER diagrams.
+- 📖 **Frontend API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) — Exhaustive REST endpoint table, error formats, rate limits, WebSocket protocols, and a copy-paste JavaScript client.
+- 🤝 **Partner Handoff Guide**: [docs/PARTNER_GUIDE.md](docs/PARTNER_GUIDE.md) — Step-by-step instructions for plugging in YOLO and OpenCV, performance optimization, and hackathon adaptation.
+- 📄 **OpenAPI Specification**: [docs/openapi.json](docs/openapi.json) — Static OpenAPI schema exported via `python -m scripts.export_openapi`.
 
-For comprehensive architectural diagrams, request lifecycles, authentication flows, and database ER diagrams, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+---
+
+## What This Repo Does Not Contain
+
+To keep this template ultra-lightweight, rapid to clone (<5 MB), and universally runnable on any developer laptop without requiring GPU hardware or multi-gigabyte downloads, the base repository intentionally **does NOT contain**:
+
+1. **No ML Model Weights**: No `.pt`, `.onnx`, or `.bin` weight files are committed to this repository. The `models_store/` directory is git-ignored and docker-ignored. Teammates download weights out-of-band (e.g. from Google Drive or S3) and drop them into `models_store/`.
+2. **No Heavy ML Frameworks in `requirements.txt`**: PyTorch, TorchVision, Ultralytics, and OpenCV are intentionally absent from base dependencies. They are documented in `requirements-cv.txt`.
+3. **No Proprietary Datasets or Videos**: Training data, annotation sets, and video test files are excluded to maintain clean repository hygiene.
+4. **Placeholder Simulators**: The base application runs out-of-the-box using `DummyDetector` (simulated bounding boxes using image pixel hashing) and `DummyFrameReader` (synthetic video frames). Your ML partner can plug in real YOLO weights and OpenCV decoding at any time by following [docs/PARTNER_GUIDE.md](docs/PARTNER_GUIDE.md).
 
 ---
 
@@ -41,6 +71,9 @@ For comprehensive architectural diagrams, request lifecycles, authentication flo
 
 ```
 vision-api/
+├── .github/
+│   └── workflows/
+│       └── ci.yml              # GitHub Actions CI workflow (Python 3.12, pytest, pip-audit)
 ├── alembic/                    # Alembic database migration scripts & configuration
 │   ├── env.py                  # Migration environment configured with app Settings & models
 │   ├── script.py.mako          # Template for generating new migrations
@@ -49,64 +82,49 @@ vision-api/
 ├── app/                        # Application source package
 │   ├── __init__.py
 │   ├── main.py                 # Application factory (create_app), lifespan, CORS, and routers
-│   ├── core/                   # Application-wide core modules
-│   │   ├── __init__.py
-│   │   ├── config.py           # Pydantic Settings class loading from .env
-│   │   ├── limiter.py          # Shared slowapi rate limiter instance
-│   │   ├── logging.py          # Structured JSON logging setup (no print statements)
-│   │   └── security.py         # Argon2id password hashing & PyJWT token utilities
+│   ├── core/                   # Application-wide core modules (config, limiter, logging, security)
 │   ├── api/                    # API routing & dependency layer
-│   │   ├── __init__.py
 │   │   ├── deps.py             # get_current_user and require_role dependencies
-│   │   └── routes/             # Route handlers
-│   │       ├── __init__.py
-│   │       ├── auth.py         # /auth/register, /auth/login, /auth/refresh
-│   │       ├── health.py       # GET /health health-check & DB connectivity endpoint
-│   │       └── users.py        # GET /users/me, GET /users/ (admin only)
-│   ├── models/                 # Database ORM models (SQLAlchemy 2.0)
-│   │   ├── __init__.py         # Exports Base, User, Job, Detection, Alert
-│   │   ├── user.py             # User accounts, hashed passwords, roles
-│   │   ├── job.py              # Asynchronous image/video processing jobs
-│   │   ├── detection.py        # Object detection results & bounding boxes
-│   │   └── alert.py            # Event alerts and notifications
+│   │   └── routes/             # Route handlers (auth, health, users, detect, jobs, alerts, analytics, ws)
+│   ├── models/                 # Database ORM models (User, Job, Detection, Alert)
 │   ├── schemas/                # Pydantic schemas and Data Transfer Objects (DTOs)
-│   │   ├── __init__.py         # Exports UserCreate, UserOut, Token, RefreshRequest
-│   │   ├── token.py            # Token and RefreshRequest schemas
-│   │   └── user.py             # UserCreate and UserOut schemas
-│   ├── services/               # Business logic and detector abstractions
-│   └── db/                     # Database engine, session maker, and Base
-│       ├── __init__.py
-│       ├── base.py             # DeclarativeBase definition
-│       └── session.py          # Engine, SQLite PRAGMA hook, and get_db() dependency
-├── scripts/                    # Command-line administrative scripts
-│   ├── __init__.py
-│   └── create_admin.py         # Admin bootstrapping and promotion utility
-├── tests/                      # Automated test suite
-│   ├── __init__.py
-│   ├── conftest.py             # Isolated in-memory SQLite fixture & TestClient
-│   ├── test_auth.py            # Registration, login, token, RBAC, and rate limit tests
-│   ├── test_health.py          # Pytest suite validating /health endpoint & degraded state
-│   └── test_models.py          # Pytest suite verifying ORM models & constraints
+│   ├── services/               # Business logic, inference, job runner, detector, and video readers
+│   └── db/                     # Database engine, session maker, and DeclarativeBase
+├── docker/
+│   └── entrypoint.sh           # Container entrypoint script (migrations + single-worker Uvicorn)
 ├── docs/                       # Architectural and technical documentation
-│   └── ARCHITECTURE.md         # System design, request flow, auth flow, and ER diagram
-├── uploads/                    # Local storage for uploaded images and videos (git-ignored)
+│   ├── API_REFERENCE.md        # Comprehensive frontend API documentation
+│   ├── ARCHITECTURE.md         # System design, request flows, and ER diagrams
+│   ├── PARTNER_GUIDE.md        # Partner handoff guide for YOLO and OpenCV integration
+│   └── openapi.json            # Exported OpenAPI 3.1 schema
 ├── models_store/               # Directory for model weights (.pt, .onnx) (git-ignored)
+├── scripts/                    # Administrative CLI scripts
+│   ├── create_admin.py         # Admin bootstrapping and promotion utility
+│   ├── export_openapi.py       # OpenAPI schema export script
+│   └── smoke_test.py           # Automated end-to-end smoke test suite
+├── tests/                      # Automated pytest test suites
+├── uploads/                    # Local storage for uploaded media (git-ignored)
+├── .dockerignore               # Container build exclusion list
+├── .env.example                # Sample environment variable template
+├── .gitattributes              # Git line endings enforcement (LF on scripts, Dockerfile, YAML)
+├── .gitignore                  # Git exclusions for venv, db, weights, caches
+├── Dockerfile                  # Production container definition (python:3.12-slim, non-root user)
+├── docker-compose.yml          # Multi-container orchestration (api + optional postgres profile)
 ├── requirements.txt            # Pinned base application dependencies
 ├── requirements-cv.txt         # Future CV/ML dependencies for partner handoff
-├── .env.example                # Sample environment variable template
-├── .gitignore                  # Git exclusions for venv, db, weights, caches
-└── README.md                   # Project documentation, setup guide, and roadmap
+├── requirements-dev.txt        # Development dependencies (pip-audit, pyyaml)
+└── README.md                   # Project documentation and roadmap
 ```
 
 ---
 
-## Setup & Getting Started
+## Quick Start
 
-### Prerequisites
-- Python 3.10+ (Tested on Python 3.14)
+### Path 1: Local Python Virtualenv (SQLite)
 
-### 1. Windows (PowerShell)
+Ideal for rapid local development, testing, and debugging.
 
+#### 1. Windows (PowerShell)
 ```powershell
 # 1. Clone repository and navigate to root
 cd path\to\vision-api
@@ -119,6 +137,7 @@ py -m venv .venv
 
 # 4. Install base dependencies
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # 5. Create local environment configuration
 Copy-Item .env.example .env
@@ -130,8 +149,7 @@ alembic upgrade head
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### 2. macOS / Linux (Bash / Zsh)
-
+#### 2. macOS / Linux (Bash / Zsh)
 ```bash
 # 1. Clone repository and navigate to root
 cd path/to/vision-api
@@ -144,6 +162,7 @@ source .venv/bin/activate
 
 # 4. Install base dependencies
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # 5. Create local environment configuration
 cp .env.example .env
@@ -155,13 +174,82 @@ alembic upgrade head
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### 3. Verify Application
+---
 
-- **Interactive API Documentation (Swagger UI)**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **Alternative ReDoc UI**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-- **Health Check Endpoint**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+### Path 2: Docker Compose (SQLite)
+
+Builds and runs the application inside an isolated Docker container with named volumes for persistent storage.
+
+```bash
+# 1. Ensure .env exists with a strong SECRET_KEY
+cp .env.example .env
+
+# 2. Build and start the api service in the background
+docker compose up -d --build
+
+# 3. View live server logs
+docker compose logs -f api
+
+# 4. Bootstrap an administrator account inside the running container
+docker compose exec api python -m scripts.create_admin
+
+# 5. Run the smoke test against the containerized API
+python -m scripts.smoke_test --base-url http://127.0.0.1:8000
+
+# 6. Stop containers
+docker compose down
+```
 
 ---
+
+### Path 3: Docker Compose with PostgreSQL
+
+Runs `vision-api` alongside a dedicated PostgreSQL 16 Alpine container using Docker Compose profiles.
+
+```bash
+# 1. Configure PostgreSQL environment variables in .env
+POSTGRES_DB=vision_api
+POSTGRES_USER=vision_user
+POSTGRES_PASSWORD=YourSuperSecurePassword123!
+DATABASE_URL=postgresql+psycopg://vision_user:YourSuperSecurePassword123!@db:5432/vision_api
+
+# 2. Start both the API and the PostgreSQL database using the 'postgres' profile
+# Setting INSTALL_POSTGRES=true ensures psycopg driver is installed in the container
+INSTALL_POSTGRES=true docker compose --profile postgres up -d --build
+
+# 3. Verify health status of both containers
+docker compose --profile postgres ps
+
+# 4. Run database migrations inside the container
+docker compose exec api alembic upgrade head
+
+# 5. Bootstrap an administrator user inside the container
+docker compose exec api python -m scripts.create_admin
+```
+
+> [!NOTE]
+> **Testing Status**:
+> Docker is not installed on this host machine, so `docker compose build` / `docker compose up` and live PostgreSQL container execution could not be run locally. However, the `Dockerfile`, `docker-compose.yml`, shell script line endings (`\n`), and YAML syntax have all been verified through automated unit tests in `tests/test_step8_packaging.py`.
+
+---
+
+### Container Administration & Persistent Volumes
+
+- **Creating an Admin Inside Docker**:
+  ```bash
+  docker compose exec api python -m scripts.create_admin
+  ```
+- **Data Persistence**:
+  Application database records and uploaded media are stored in Docker named volumes:
+  - `vision_api_data` (`/app/data`)
+  - `vision_api_uploads` (`/app/uploads`)
+  - `vision_api_postgres_data` (`/var/lib/postgresql/data` when using PostgreSQL)
+- **Data Deletion Warning**:
+  Running `docker compose down` stops and removes the containers but **preserves** all database records and uploaded media in the named volumes.
+  Running `docker compose down -v` permanently **deletes** the named volumes, erasing all stored databases and uploaded files.
+
+---
+
 
 ## Authentication & Role-Based Access Control
 
@@ -728,11 +816,35 @@ pytest -v
 - [x] **Step 5: Video upload and background jobs**
 - [x] **Step 6: WebSocket, analytics, alerts**
 - [x] **Step 7: Error handling and hardening**
-- [ ] **Step 8: Docker and partner handoff**
+- [x] **Step 8: Docker, CI, and partner handoff**
 
 ---
 
 ## Changelog
+
+### Step 8 — Docker, CI, Packaging & Partner Handoff
+- Created `.gitattributes` enforcing LF line endings across `*.sh`, `Dockerfile`, and `*.yml` files to prevent carriage return (`\r`) execution failures inside Linux containers.
+- Created `.dockerignore` excluding `.git`, `.venv`, `__pycache__`, `.pytest_cache`, `.env` (never baked into images), `*.db`, `uploads/*`, `models_store/*`, `tests`, and `docs`.
+- Built production `Dockerfile` (`python:3.12-slim`):
+  - Configured `PYTHONDONTWRITEBYTECODE=1` and `PYTHONUNBUFFERED=1` with pip caching optimizations (`--no-cache-dir`).
+  - Added build arguments `INSTALL_CV` (conditional `requirements-cv.txt` installation) and `INSTALL_POSTGRES` (conditional `psycopg[binary]` installation).
+  - Normalizes line endings via `sed -i 's/\r$//' /app/docker/entrypoint.sh`.
+  - Runs under unprivileged non-root user `appuser` (UID 1000) with ownership of `/app/data`, `/app/uploads`, `/app/models_store`, and `/app/logs`.
+  - Configured native Python `urllib` health check on `GET /health` with 30s interval.
+- Created container entrypoint script in `docker/entrypoint.sh`:
+  - Enforces `set -e`.
+  - Documents rationale for single-worker Uvicorn process (in-process `ThreadPoolExecutor` job runner and in-memory `WebSocketManager` connection tracking).
+  - Applies database migrations (`alembic upgrade head`) before launching Uvicorn ASGI server with configurable `$UVICORN_ARGS`.
+- Created multi-container orchestration in `docker-compose.yml`:
+  - `api` service with build args, ports `"8000:8000"`, `.env` binding, health check, named persistent volumes (`app_data`, `app_uploads`), and read-only bind mount `./models_store:/app/models_store:ro`.
+  - Optional `db` service (`postgres:16-alpine`) isolated under compose profile `"postgres"` with non-hardcoded password enforcement (`${POSTGRES_PASSWORD:?...}`).
+- Created GitHub Actions CI in `.github/workflows/ci.yml`:
+  - Automated triggers on `push` and `pull_request` to `main`.
+  - Python 3.12 runner with pip caching, test-safe environment variables, pytest execution, and non-blocking `pip-audit` security scan.
+- Created OpenAPI schema exporter in `scripts/export_openapi.py` generating `docs/openapi.json` without server initialization.
+- Authored comprehensive frontend documentation in `docs/API_REFERENCE.md` covering all REST endpoints, standard error contracts (`request_id`), authentication lifecycle, pagination, rate limits, WebSocket protocols, and an end-to-end JavaScript client.
+- Authored partner handoff guide in `docs/PARTNER_GUIDE.md` detailing YOLOv8 and OpenCV integration steps, code skeletons, performance optimizations, mocking strategies for CI, git collaboration rules, and demo-day fallback procedures.
+- Added `pyyaml==6.0.3` to `requirements-dev.txt` and created comprehensive packaging test suite in `tests/test_step8_packaging.py` (all tests passing).
 
 ### Step 7 — Error Handling, Logging, Rate Limiting & Hardening
 - Added 11 configuration settings in `app/core/config.py`, `.env.example`, and `.env`: `LOG_LEVEL=INFO`, `MAX_REQUEST_BODY_KB=1024`, `DEFAULT_RATE_LIMIT="120/minute"`, `UPLOAD_RATE_LIMIT="20/minute"`, `REFRESH_RATE_LIMIT="10/minute"`, `INFERENCE_TIMEOUT_SECONDS=30`, `INFERENCE_WORKERS=2`, `INFERENCE_QUEUE_LIMIT=8`, `MAX_FRAME_FAILURE_RATIO=0.5`, `ENABLE_DOCS=true`, `SECURITY_HEADERS_ENABLED=true`.

@@ -1,0 +1,46 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# Python cache and byte-compiled files
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+
+# Testing and test caches
+.pytest_cache
+.coverage
+htmlcov/
+tests/
+
+# Documentation (static docs not needed at container runtime)
+docs/
+
+# Secrets and local environments - NEVER bake into container images!
+.env
+*.env.local
+
+# Local SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Ephemeral runtime uploads and heavy model weights (handled via Docker volumes / bind mounts)
+uploads/*
+!uploads/.gitkeep
+models_store/*
+!models_store/.gitkeep
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
