@@ -71,13 +71,17 @@ class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
             if content_length:
                 try:
                     length = int(content_length)
-                    max_bytes = settings.MAX_REQUEST_BODY_KB * 1024
+                    if request.url.path == "/internal/api/v1/cv/events":
+                        max_kb = settings.CV_EVENTS_MAX_BODY_KB
+                    else:
+                        max_kb = settings.MAX_REQUEST_BODY_KB
+                    max_bytes = max_kb * 1024
                     if length > max_bytes:
                         req_id = get_request_id() or str(uuid.uuid4())
                         return JSONResponse(
                             status_code=413,
                             content={
-                                "detail": f"Request body exceeds maximum allowed limit of {settings.MAX_REQUEST_BODY_KB} KB",
+                                "detail": f"Request body exceeds maximum allowed limit of {max_kb} KB",
                                 "request_id": req_id,
                             },
                             headers={"X-Request-ID": req_id},

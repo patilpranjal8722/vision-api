@@ -57,6 +57,7 @@ def setup_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "JOB_RUNNER_INLINE", True)
     monkeypatch.setattr(settings, "DUMMY_FRAME_DELAY_MS", 0)
+    monkeypatch.setattr(settings, "DETECTOR_BACKEND", "dummy")
     monkeypatch.setattr("app.db.session.SessionLocal", TestingSessionLocal)
     monkeypatch.setattr("app.services.job_runner.SessionLocal", TestingSessionLocal)
     monkeypatch.setattr("app.api.routes.ws.SessionLocal", TestingSessionLocal)

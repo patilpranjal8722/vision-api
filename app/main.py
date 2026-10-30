@@ -43,6 +43,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.routes.alerts import router as alerts_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.auth import router as auth_router
+from app.api.routes.cv_events import router as cv_events_router
 from app.api.routes.detect import router as detect_router
 from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
@@ -86,6 +87,18 @@ def validate_startup_settings(settings: Settings) -> None:
             raise RuntimeError(
                 "Production startup failed: ALLOWED_ORIGINS must not contain wildcard '*' when DEBUG=false."
             )
+        if not settings.CV_SERVICE_API_KEY or len(settings.CV_SERVICE_API_KEY) < 32:
+            raise RuntimeError(
+                "Production startup failed: CV_SERVICE_API_KEY must be set and at least 32 characters long when DEBUG=false."
+            )
+        if not settings.CV_EVENTS_API_KEY or len(settings.CV_EVENTS_API_KEY) < 32:
+            raise RuntimeError(
+                "Production startup failed: CV_EVENTS_API_KEY must be set and at least 32 characters long when DEBUG=false."
+            )
+        if settings.CV_SERVICE_API_KEY == settings.CV_EVENTS_API_KEY:
+            raise RuntimeError(
+                "Production startup failed: CV_SERVICE_API_KEY and CV_EVENTS_API_KEY must differ from each other."
+            )
     else:
         if (
             not settings.SECRET_KEY
@@ -97,6 +110,10 @@ def validate_startup_settings(settings: Settings) -> None:
                 "Never use default or weak keys in production. "
                 "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
             )
+        if not settings.CV_SERVICE_API_KEY:
+            logger.warning("CV_SERVICE_API_KEY is empty. Outbound CV microservice requests will be unauthenticated.")
+        if not settings.CV_EVENTS_API_KEY:
+            logger.warning("CV_EVENTS_API_KEY is empty. Inbound calls to /internal/api/v1/cv/events will be refused with 401.")
 
 
 @asynccontextmanager
@@ -318,6 +335,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(analytics_router)
     application.include_router(ws_router)
     application.include_router(test_page_router)
+    application.include_router(cv_events_router)
     return application
 
 

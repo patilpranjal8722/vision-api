@@ -28,6 +28,10 @@ All endpoints, headers, error structures, rate limits, and WebSocket protocols d
 - **ReDoc Documentation**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
 - **OpenAPI 3.1 JSON Schema**: [http://127.0.0.1:8000/openapi.json](http://127.0.0.1:8000/openapi.json) (or file [docs/openapi.json](openapi.json))
 
+### Allowed Frontend Origins (CORS)
+
+Cross-Origin Resource Sharing (CORS) is enabled via `ALLOWED_ORIGINS` to permit browser requests from local frontend applications. By default, allowed origins include the Vite React dashboard (`http://localhost:5173` and `http://127.0.0.1:5173`), standard web dev servers (`http://localhost:3000` and `http://127.0.0.1:3000`), and backend test ports (`http://localhost:8000` and `http://127.0.0.1:8000`). Preflight `OPTIONS` requests from these origins receive `Access-Control-Allow-Origin` and credentials support.
+
 ---
 
 ## Standard Error Shape & Request Tracking

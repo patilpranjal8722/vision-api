@@ -52,5 +52,18 @@ class Job(Base):
         nullable=False,
     )
 
+    # CV microservice integration fields (nullable)
+    cv_job_id: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+    source_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    camera_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    required_equipment: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    cv_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     def __repr__(self) -> str:
         return f"<Job(id='{self.id}', type='{self.type}', status='{self.status}', progress={self.progress})>"

@@ -48,6 +48,17 @@ def run_migrations_online() -> None:
     Uses the application's configured SQLAlchemy engine to run migrations
     with batch mode enabled for SQLite compatibility.
     """
+    connection = config.attributes.get("connection", None)
+    if connection is not None:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     with engine.connect() as connection:
         context.configure(
             connection=connection,

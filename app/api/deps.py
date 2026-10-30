@@ -1,10 +1,12 @@
 """FastAPI dependency providers for authentication, authorization, and database access."""
 
-from typing import Callable
-from fastapi import Depends, HTTPException, Request, status
+import hmac
+from typing import Callable, Optional
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.user import User
@@ -76,3 +78,28 @@ def require_role(*roles: str) -> Callable[[User], User]:
         return current_user
 
     return role_checker
+
+
+def require_cv_events_key(
+    x_service_key: Optional[str] = Header(None, alias="X-Service-Key"),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Validate internal service-to-service key for CV microservice event intake.
+
+    Fails closed (HTTP 401) if CV_EVENTS_API_KEY is not configured or empty.
+    Returns HTTP 401 with generic detail for missing, invalid, or empty keys.
+    """
+    configured_key = settings.CV_EVENTS_API_KEY
+    if not configured_key or not x_service_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid service credentials",
+        )
+
+    if not hmac.compare_digest(x_service_key.encode("utf-8"), configured_key.encode("utf-8")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid service credentials",
+        )
+
+    return x_service_key

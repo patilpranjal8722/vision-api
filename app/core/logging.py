@@ -22,6 +22,10 @@ SENSITIVE_KEYS = {
     "secret",
     "secret_key",
     "hashed_password",
+    "cv_service_api_key",
+    "cv_events_api_key",
+    "x-service-key",
+    "x_service_key",
 }
 
 STANDARD_ATTRS = {

@@ -314,6 +314,8 @@ def test_startup_safety_validation() -> None:
         DEBUG=False,
         SECRET_KEY="a_very_strong_production_secret_key_that_is_long_enough",
         ALLOWED_ORIGINS=["https://example.com"],
+        CV_SERVICE_API_KEY="a_very_strong_cv_service_api_key_32_chars_12345",
+        CV_EVENTS_API_KEY="a_very_strong_cv_events_api_key_32_chars_differ",
     )
     validate_startup_settings(prod_valid)
 

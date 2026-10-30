@@ -21,6 +21,7 @@ The template provides an end-to-end operational backend (validation, storage, as
 - [Detection API](#detection-api)
 - [Video Upload & Background Jobs](#video-upload--background-jobs)
 - [Alerts, Analytics & WebSockets](#alerts-analytics--websockets)
+- [CV Integration](#cv-integration)
 - [Running Tests](#running-tests)
 - [Roadmap](#roadmap)
 - [Changelog](#changelog)
@@ -53,6 +54,7 @@ Detailed guides for teammates and frontend integrators:
 - 📖 **Frontend API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) — Exhaustive REST endpoint table, error formats, rate limits, WebSocket protocols, and a copy-paste JavaScript client.
 - 🤝 **Partner Handoff Guide**: [docs/PARTNER_GUIDE.md](docs/PARTNER_GUIDE.md) — Step-by-step instructions for plugging in YOLO and OpenCV, performance optimization, and hackathon adaptation.
 - **PPE Detection Contract**: [docs/PPE_CONTRACT.md](docs/PPE_CONTRACT.md) — Formal specification of the ppe.v1 contract, schemas, verdict precedence, and YOLO partner guidelines.
+- **CV Integration Contract**: [docs/CV_INTEGRATION_CONTRACT.md](docs/CV_INTEGRATION_CONTRACT.md) — Specification of the v1.0 contract between backend and external CV microservice.
 - 📄 **OpenAPI Specification**: [docs/openapi.json](docs/openapi.json) — Static OpenAPI schema exported via `python -m scripts.export_openapi`.
 
 ---
@@ -556,6 +558,34 @@ async function sendCanvasFrame(streamSocket, canvas) {
   }, "image/jpeg", 0.8);
 }
 ```
+
+---
+
+## CV Integration
+
+The backend integrates with an external Computer Vision (CV) microservice that processes PPE (helmet and safety vest) compliance videos and images. The CV microservice decides compliance verdicts, tracks workers across frames, confirms multi-frame violations, and extracts worker identity. The backend validates, stores, deduplicates, notifies, and serves.
+
+### Authentication Keys
+
+The integration uses two distinct pre-shared service keys passed in the `X-Service-Key` header:
+- `CV_SERVICE_API_KEY`: Outbound key used by the backend when calling CV microservice endpoints.
+- `CV_EVENTS_API_KEY`: Inbound key used by the CV microservice when POSTing events to `/internal/api/v1/cv/events`.
+
+Both keys must be at least 32 characters long in production (`DEBUG=false`) and must differ from each other. Generate keys via:
+```powershell
+py -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+### Event Intake & Testing Helper
+
+The CV service posts lifecycle and detection events to the backend at `POST /internal/api/v1/cv/events`. The backend enforces idempotency using `event_id`, stores events in the `cv_events` table, and dispatches registered handlers.
+
+You can verify the event intake pipeline using the test helper script:
+```powershell
+py -m scripts.send_test_event --url http://127.0.0.1:8000 --key YOUR_EVENTS_KEY
+```
+
+For the complete specification, shared data schemas, and retry semantics, see [docs/CV_INTEGRATION_CONTRACT.md](docs/CV_INTEGRATION_CONTRACT.md).
 
 ---
 

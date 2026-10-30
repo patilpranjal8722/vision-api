@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:8000",
+        "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8000",
+        "http://127.0.0.1:5173",
     ]
     # SECRET_KEY must come only from the environment / .env file
     SECRET_KEY: str = ""
@@ -93,6 +95,16 @@ class Settings(BaseSettings):
     MAX_FRAME_FAILURE_RATIO: float = 0.5
     ENABLE_DOCS: bool = True
     SECURITY_HEADERS_ENABLED: bool = True
+
+    # CV Service Integration Settings
+    CV_SERVICE_URL: str = "http://127.0.0.1:9000"
+    CV_SERVICE_API_KEY: str = ""
+    CV_EVENTS_API_KEY: str = ""
+    BACKEND_PUBLIC_URL: str = "http://127.0.0.1:8000"
+    CV_CONTRACT_VERSION: str = "1.0"
+    CV_EVENTS_MAX_BATCH: int = 100
+    CV_EVENTS_MAX_BODY_KB: int = 512
+    CV_JOB_MAX_AGE_MINUTES: int = 120
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod

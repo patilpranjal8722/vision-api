@@ -713,3 +713,59 @@ The `request_id` matches the `X-Request-ID` response header, enabling instant co
 | `503 Service Unavailable` | `ServerBusy` / Readiness / Detector | Inference queue saturation (`INFERENCE_QUEUE_LIMIT`), missing detector, or `/ready` DB failure | `{"detail": "Server busy, try again shortly", "request_id": "..."}` | Backpressure protection under load. |
 | `504 Gateway Timeout` | `InferenceTimeout` | Inference execution exceeds `INFERENCE_TIMEOUT_SECONDS` | `{"detail": "Inference processing timed out", "request_id": "..."}` | Prevents client hanging. |
 
+---
+
+## 11. External CV Microservice Integration Flow
+
+The backend integrates with an external Computer Vision (CV) microservice dedicated to PPE compliance detection, worker tracking, violation confirmation, and identity reading.
+
+The complete contract between the backend and CV microservice is specified in [docs/CV_INTEGRATION_CONTRACT.md](CV_INTEGRATION_CONTRACT.md).
+
+### 11.1 Internal Event Intake Route
+- Route: `POST /internal/api/v1/cv/events`
+- Authentication: `X-Service-Key` header validated against `CV_EVENTS_API_KEY` using constant-time comparison (`hmac.compare_digest`).
+- Idempotency: Enforced using unique `event_id` (UUID v4) primary keys in the `cv_events` database table.
+- Body Limit: Up to `CV_EVENTS_MAX_BODY_KB` (512 KB) enforced by middleware.
+- Batch Capacity: Up to `CV_EVENTS_MAX_BATCH` (100) events per POST.
+- Handlers: Asynchronous extensible handler registry (`app/services/cv_events.py`) updating job lifecycle (`job.progress`, `job.completed`, `job.failed`).
+
+### 11.2 End-to-End Integration Sequence
+
+The diagram below details the end-to-end flow across frontend, backend, CV microservice, and persistent storage:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Frontend as Frontend Client
+    participant Backend as FastAPI Backend
+    participant DB as Backend Database (jobs, cv_events)
+    participant CV as CV Microservice
+
+    Note over Frontend,CV: 1. Submission Phase
+    Frontend->>Backend: POST /detect/video (Upload media file)
+    Backend->>DB: Create Job (status="pending")
+    Backend-->>Frontend: HTTP 202 Accepted {job_id, status="pending"}
+    Backend->>CV: POST /api/v1/jobs (multipart: metadata + media, X-Service-Key: CV_SERVICE_API_KEY)
+    CV-->>Backend: HTTP 202 Accepted {job_id: cv_job_id, status: "queued"}
+    Backend->>DB: Update Job (cv_job_id, cv_status="queued")
+
+    Note over CV,DB: 2. CV Processing and Event Webhooks
+    CV->>CV: Process frames, track workers, verify PPE & identity
+    CV->>Backend: POST /internal/api/v1/cv/events (job.progress, X-Service-Key: CV_EVENTS_API_KEY)
+    Backend->>DB: Store in cv_events (idempotent), update Job (progress, status="running")
+    Backend-->>CV: HTTP 200 {results: [{event_id, status: "accepted"}]}
+
+    CV->>Backend: POST /internal/api/v1/cv/events (worker.status / violation.confirmed)
+    Backend->>DB: Store in cv_events, trigger internal notifications
+    Backend-->>CV: HTTP 200 {results: [{event_id, status: "accepted"}]}
+
+    CV->>Backend: POST /internal/api/v1/cv/events (job.completed {summary})
+    Backend->>DB: Store in cv_events, mark Job (status="done", progress=100, finished_at)
+    Backend-->>CV: HTTP 200 {results: [{event_id, status: "accepted"}]}
+
+    Note over Frontend,Backend: 3. Status Polling and Results
+    Frontend->>Backend: GET /jobs/{job_id}
+    Backend->>DB: Fetch Job & detection results
+    Backend-->>Frontend: HTTP 200 {status: "done", progress: 100, result: {...}}
+```
+
