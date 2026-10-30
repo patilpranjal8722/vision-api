@@ -8,7 +8,6 @@ from typing import Optional, Tuple
 from urllib.parse import urlparse
 from PIL import Image
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from starlette.concurrency import run_in_threadpool
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger

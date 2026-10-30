@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router-dom'
 import { AppLayout } from '@/app/layouts/AppLayout'
 import { AuthLayout } from '@/app/layouts/AuthLayout'
@@ -9,12 +10,19 @@ import { WorkersPage } from '@/pages/WorkersPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { RouteErrorPage } from '@/pages/RouteErrorPage'
+import { LoadingState } from '@/components/common/LoadingState'
 
+// Dev-only UI Kit page loaded lazily so it is excluded from production builds
+const DevUiKitPage = import.meta.env.DEV
+  ? React.lazy(() => import('@/pages/dev/UiKitPage'))
+  : null
 
 export const routes: RouteObject[] = [
   // Public-only auth routes
   {
     element: <PublicOnlyRoute />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         path: '/login',
@@ -32,6 +40,7 @@ export const routes: RouteObject[] = [
   {
     path: '/',
     element: <ProtectedRoute />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <AppLayout />,
@@ -41,6 +50,20 @@ export const routes: RouteObject[] = [
           { path: 'violations', element: <ViolationsPage /> },
           { path: 'results', element: <ResultsPage /> },
           { path: 'workers', element: <WorkersPage /> },
+          ...(import.meta.env.DEV && DevUiKitPage
+            ? [
+                {
+                  path: 'dev/ui-kit',
+                  element: (
+                    <React.Suspense
+                      fallback={<LoadingState message="Loading UI kit showcase..." />}
+                    >
+                      <DevUiKitPage />
+                    </React.Suspense>
+                  ),
+                },
+              ]
+            : []),
         ],
       },
     ],
@@ -49,6 +72,7 @@ export const routes: RouteObject[] = [
   {
     path: '*',
     element: <AuthLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         path: '*',

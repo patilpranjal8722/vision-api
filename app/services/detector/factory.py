@@ -5,9 +5,10 @@ from typing import Optional
 from app.core.config import Settings, get_settings
 from app.services.detector.base import BaseDetector
 from app.services.detector.dummy import DummyDetector
+from app.services.detector.ppe_dummy import PpeDummyDetector
 from app.services.detector.yolo_detector import YoloDetector
 
-VALID_BACKENDS = ("dummy", "yolo")
+VALID_BACKENDS = ("dummy", "ppe_dummy", "yolo")
 
 
 def get_detector(settings: Optional[Settings] = None) -> BaseDetector:
@@ -17,7 +18,7 @@ def get_detector(settings: Optional[Settings] = None) -> BaseDetector:
         settings: Application Settings instance. Defaults to get_settings().
 
     Returns:
-        BaseDetector: Instantiated detector backend (DummyDetector or YoloDetector).
+        BaseDetector: Instantiated detector backend (DummyDetector, PpeDummyDetector, or YoloDetector).
 
     Raises:
         ValueError: If DETECTOR_BACKEND is unrecognized.
@@ -29,6 +30,8 @@ def get_detector(settings: Optional[Settings] = None) -> BaseDetector:
 
     if backend == "dummy":
         return DummyDetector(confidence_threshold=settings.CONFIDENCE_THRESHOLD)
+    elif backend == "ppe_dummy":
+        return PpeDummyDetector(confidence_threshold=settings.CONFIDENCE_THRESHOLD)
     elif backend == "yolo":
         return YoloDetector(
             model_path=settings.MODEL_PATH,

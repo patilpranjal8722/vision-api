@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 import uuid
 from fastapi import HTTPException, UploadFile, status
-from PIL import Image, ImageFile, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 
 from app.core.config import Settings, get_settings
 

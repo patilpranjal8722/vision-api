@@ -2,8 +2,9 @@
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -69,50 +70,84 @@ def get_analytics_summary(
     settings = get_settings()
     d_from, d_to = _parse_and_validate_date_range(date_from, date_to)
 
-    db.expire_all()
-    det_query = db.query(Detection).filter(
-        Detection.created_at >= d_from,
-        Detection.created_at <= d_to,
+    # Compute scalar aggregates (COUNT, SUM, MAX) in one query directly on the database
+    agg_query = (
+        db.query(
+            func.count(Detection.id),
+            func.coalesce(func.sum(Detection.total_count), 0),
+            func.coalesce(func.max(Detection.total_count), 0),
+        )
+        .filter(
+            Detection.created_at >= d_from,
+            Detection.created_at <= d_to,
+        )
     )
     if current_user.role != "admin":
-        det_query = det_query.filter(Detection.user_id == current_user.id)
+        agg_query = agg_query.filter(Detection.user_id == current_user.id)
 
-    raw_detections = det_query.order_by(Detection.created_at.asc()).limit(settings.ANALYTICS_MAX_ROWS + 1).all()
+    total_detections, total_objects, max_count = agg_query.one()
+    total_detections = int(total_detections or 0)
+    total_objects = int(total_objects or 0)
+    max_count = int(max_count or 0)
+    avg_count = round(total_objects / total_detections, 2) if total_detections > 0 else 0.0
 
-    truncated = len(raw_detections) > settings.ANALYTICS_MAX_ROWS
-    detections = raw_detections[: settings.ANALYTICS_MAX_ROWS]
+    # Source breakdown via GROUP BY source_type
+    source_query = (
+        db.query(Detection.source_type, func.count(Detection.id))
+        .filter(
+            Detection.created_at >= d_from,
+            Detection.created_at <= d_to,
+        )
+    )
+    if current_user.role != "admin":
+        source_query = source_query.filter(Detection.user_id == current_user.id)
 
-    # Alerts query
-    alert_query = db.query(Alert).filter(
-        Alert.created_at >= d_from,
-        Alert.created_at <= d_to,
+    source_rows = source_query.group_by(Detection.source_type).all()
+    counts_by_source: Dict[str, int] = {"image": 0, "video": 0, "stream": 0}
+    for src, cnt in source_rows:
+        counts_by_source[src] = int(cnt)
+
+    # Alerts counted by level via GROUP BY level
+    alert_query = (
+        db.query(Alert.level, func.count(Alert.id))
+        .filter(
+            Alert.created_at >= d_from,
+            Alert.created_at <= d_to,
+        )
     )
     if current_user.role != "admin":
         alert_query = alert_query.filter(Alert.user_id == current_user.id)
 
-    alerts = alert_query.all()
-
-    total_detections = len(detections)
-    total_objects = sum(d.total_count for d in detections)
-    avg_count = round(total_objects / total_detections, 2) if total_detections > 0 else 0.0
-    max_count = max((d.total_count for d in detections), default=0)
-
-    # Counts by source type
-    counts_by_source: Dict[str, int] = {"image": 0, "video": 0, "stream": 0}
-    for d in detections:
-        src = d.source_type
-        counts_by_source[src] = counts_by_source.get(src, 0) + 1
-
-    # Alerts counted by level
+    alert_rows = alert_query.group_by(Alert.level).all()
     alerts_by_level: Dict[str, int] = {"warning": 0, "critical": 0}
-    for a in alerts:
-        alerts_by_level[a.level] = alerts_by_level.get(a.level, 0) + 1
+    for lvl, cnt in alert_rows:
+        alerts_by_level[lvl] = int(cnt)
 
-    # Top labels extraction
+    # For top_labels, select ONLY results and source_type for rows where total_count > 0, capped to ANALYTICS_MAX_ROWS
+    label_query = (
+        db.query(Detection.results, Detection.source_type)
+        .filter(
+            Detection.created_at >= d_from,
+            Detection.created_at <= d_to,
+            Detection.total_count > 0,
+        )
+    )
+    if current_user.role != "admin":
+        label_query = label_query.filter(Detection.user_id == current_user.id)
+
+    raw_label_rows = (
+        label_query.order_by(Detection.created_at.asc())
+        .limit(settings.ANALYTICS_MAX_ROWS + 1)
+        .all()
+    )
+    truncated = len(raw_label_rows) > settings.ANALYTICS_MAX_ROWS
+    label_rows = raw_label_rows[: settings.ANALYTICS_MAX_ROWS]
+
+    # Top labels extraction from sample
     label_counter: Counter[str] = Counter()
-    for d in detections:
-        res = d.results or {}
-        if d.source_type == "video":
+    for res, source_type in label_rows:
+        res = res or {}
+        if source_type == "video":
             peak = res.get("peak_frame") or {}
             objs = peak.get("objects") or []
         else:
@@ -161,15 +196,22 @@ def get_analytics_timeseries(
     settings = get_settings()
     d_from, d_to = _parse_and_validate_date_range(date_from, date_to)
 
-    db.expire_all()
-    det_query = db.query(Detection).filter(
-        Detection.created_at >= d_from,
-        Detection.created_at <= d_to,
+    # Select only scalar columns (created_at, total_count) instead of full ORM instances with JSON results
+    det_query = (
+        db.query(Detection.created_at, Detection.total_count)
+        .filter(
+            Detection.created_at >= d_from,
+            Detection.created_at <= d_to,
+        )
     )
     if current_user.role != "admin":
         det_query = det_query.filter(Detection.user_id == current_user.id)
 
-    raw_detections = det_query.order_by(Detection.created_at.asc()).limit(settings.ANALYTICS_MAX_ROWS).all()
+    raw_detections = (
+        det_query.order_by(Detection.created_at.asc())
+        .limit(settings.ANALYTICS_MAX_ROWS)
+        .all()
+    )
 
     # Pre-populate all continuous buckets to ensure no gaps
     step = timedelta(hours=1) if interval == "hour" else timedelta(days=1)
@@ -184,8 +226,7 @@ def get_analytics_timeseries(
         curr += step
 
     # Populate buckets from query results
-    for d in raw_detections:
-        c_at = d.created_at
+    for c_at, total_count in raw_detections:
         if c_at.tzinfo is None:
             c_at = c_at.replace(tzinfo=timezone.utc)
         else:
@@ -198,8 +239,8 @@ def get_analytics_timeseries(
 
         if key in bucket_data:
             bucket_data[key]["detections"] += 1
-            bucket_data[key]["total_objects"] += d.total_count
-            bucket_data[key]["max_count"] = max(bucket_data[key]["max_count"], d.total_count)
+            bucket_data[key]["total_objects"] += (total_count or 0)
+            bucket_data[key]["max_count"] = max(bucket_data[key]["max_count"], (total_count or 0))
 
     result_buckets: List[TimeseriesBucket] = []
     for b_time in sorted(bucket_data.keys()):

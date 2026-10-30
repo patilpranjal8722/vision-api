@@ -95,9 +95,11 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     app = create_app()
 
     def override_get_db() -> Generator[Session, None, None]:
-        db_session.expire_all()
-        yield db_session
-        db_session.expire_all()
+        session = TestingSessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:

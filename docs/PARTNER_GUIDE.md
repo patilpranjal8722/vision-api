@@ -131,14 +131,27 @@ The stub file is [app/services/detector/yolo_detector.py](file:///c:/Users/admin
 The base class `BaseDetector` requires `detect(image: Image.Image)` to return a `DetectionResult` Pydantic model (`app/schemas/detection.py`):
 ```python
 class DetectionResult(BaseModel):
-    objects: List[DetectedObject]  # label, confidence (0.0-1.0), and BoundingBox(x1, y1, x2, y2)
+    objects: List[DetectedObject]  # Raw detected objects (person, helmet, vest, unassigned)
     total_count: int               # Total qualifying objects detected
     image_width: int               # Width in pixels
     image_height: int              # Height in pixels
     inference_ms: float            # Pure inference time in milliseconds
     detector_name: str             # "yolo"
-    extra: Dict[str, Any]          # Optional metadata (weights, device, etc.)
+    extra: Dict[str, Any]          # PpeExtraRaw conforming to schema "ppe.v1"
 ```
+
+#### PPE Contract Requirements
+For the PPE compliance dashboard, `detect()` **must** return `extra` populated with a dictionary conforming to `PpeExtraRaw` (`app/schemas/ppe.py`) under schema `"ppe.v1"`:
+- `schema`: `"ppe.v1"`
+- `workers`: List of `PpeWorkerRaw` (each worker has `id`, `bbox`, `person_confidence`, `helmet: PpeItem`, `vest: PpeItem`, optional `badge_id`, `flags`, and `notes`). Workers must be ordered left to right by their bounding box `x1`.
+- `unassigned_items`: List of `UnassignedItem` detections not worn on any worker (e.g. helmets held in hand or sitting on tables).
+- `pipeline`: `PpePipelineInfo` (e.g. `low_light_enhanced`, `zoom_pass_workers`).
+
+Refer to [docs/PPE_CONTRACT.md](file:///c:/Users/admin/Desktop/Project/docs/PPE_CONTRACT.md) for full schema definitions, field reference tables, and assignment heuristics.
+
+> [!IMPORTANT]
+> **Unit Testing with `validate_detector_output`**:
+> When writing tests for your `YoloDetector`, always import and call `validate_detector_output(result, image_width, image_height)` from `app.services.ppe_rules`. This public function validates coordinate bounding boxes, ranges, IDs, and flags, ensuring your model output will never be rejected by the backend API.
 
 ### 3. Implementation Skeleton [untested skeleton]
 Edit [app/services/detector/yolo_detector.py](file:///c:/Users/admin/Desktop/Project/app/services/detector/yolo_detector.py) as follows:

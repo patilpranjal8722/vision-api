@@ -236,4 +236,72 @@ def test_analytics_truncation_flag(
     res = client.get("/analytics/summary", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
     assert res.json()["truncated"] is True
-    assert res.json()["total_detections"] == 2
+    # Totals cover the entire date range (3 rows) instead of being clamped to ANALYTICS_MAX_ROWS (2)
+    assert res.json()["total_detections"] == 3
+
+
+def test_analytics_summary_totals_exceed_max_rows_and_scoping(
+    client: TestClient,
+    analytics_users: tuple[User, User, User],
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test totals cover the whole date range when exceeding ANALYTICS_MAX_ROWS and verify user vs admin scoping."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ANALYTICS_MAX_ROWS", 2)  # Tiny cap for testing
+
+    u1, u2, admin = analytics_users
+    u1_token = create_access_token(u1.id)
+    admin_token = create_access_token(admin.id)
+
+    now = datetime.now(timezone.utc)
+
+    # 4 detections for u1: total_counts = [2, 4, 6, 8] -> sum=20, max=8, avg=5.0
+    for i, count in enumerate([2, 4, 6, 8]):
+        db_session.add(
+            Detection(
+                user_id=u1.id,
+                source_type="image" if i % 2 == 0 else "video",
+                detector_name="dummy",
+                total_count=count,
+                results={"objects": [{"label": "cat"}]} if i % 2 == 0 else {"peak_frame": {"objects": [{"label": "bird"}]}},
+                created_at=now - timedelta(minutes=10 * (i + 1)),
+            )
+        )
+
+    # 3 detections for u2: total_counts = [10, 20, 30] -> sum=60
+    for i, count in enumerate([10, 20, 30]):
+        db_session.add(
+            Detection(
+                user_id=u2.id,
+                source_type="stream",
+                detector_name="dummy",
+                total_count=count,
+                results={"objects": [{"label": "truck"}]},
+                created_at=now - timedelta(minutes=5 * (i + 1)),
+            )
+        )
+    db_session.commit()
+
+    # User 1 query: should see only u1's 4 detections despite ANALYTICS_MAX_ROWS=2
+    res_u1 = client.get("/analytics/summary", headers={"Authorization": f"Bearer {u1_token}"})
+    assert res_u1.status_code == 200
+    data_u1 = res_u1.json()
+    assert data_u1["total_detections"] == 4  # All 4 u1 rows counted (exceeds cap of 2)
+    assert data_u1["total_objects"] == 20    # 2 + 4 + 6 + 8
+    assert data_u1["avg_count"] == 5.0
+    assert data_u1["max_count"] == 8
+    assert data_u1["counts_by_source"] == {"image": 2, "video": 2, "stream": 0}
+    assert data_u1["truncated"] is True     # Sample for top_labels was capped at 2
+    assert "truck" not in data_u1["top_labels"]
+
+    # Admin query: should aggregate across all users (4 from u1 + 3 from u2 = 7)
+    res_admin = client.get("/analytics/summary", headers={"Authorization": f"Bearer {admin_token}"})
+    assert res_admin.status_code == 200
+    data_admin = res_admin.json()
+    assert data_admin["total_detections"] == 7
+    assert data_admin["total_objects"] == 80  # 20 + 60
+    assert data_admin["max_count"] == 30
+    assert data_admin["counts_by_source"] == {"image": 2, "video": 2, "stream": 3}
+    assert data_admin["truncated"] is True
+

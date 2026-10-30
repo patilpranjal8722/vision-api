@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { normalizeError, ApiError } from '@/api/errors'
-import {
-  AxiosError,
-  type AxiosResponse,
-  type InternalAxiosRequestConfig,
-} from 'axios'
+import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 
 describe('normalizeError', () => {
   it('handles string detail error response', () => {

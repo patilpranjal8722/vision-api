@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { env } from '@/lib/env'
 import { AppBackground } from '@/components/common/AppBackground'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -292,7 +293,9 @@ export function AppLayout() {
             className="flex-1 p-4 sm:p-6 lg:p-8 min-w-0"
             tabIndex={-1}
           >
-            <Outlet />
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
           </main>
         </div>
       </div>

@@ -52,6 +52,7 @@ Detailed guides for teammates and frontend integrators:
 - 📐 **System Architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Layered architecture diagrams, request flows, middleware onion, security model, and database ER diagrams.
 - 📖 **Frontend API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) — Exhaustive REST endpoint table, error formats, rate limits, WebSocket protocols, and a copy-paste JavaScript client.
 - 🤝 **Partner Handoff Guide**: [docs/PARTNER_GUIDE.md](docs/PARTNER_GUIDE.md) — Step-by-step instructions for plugging in YOLO and OpenCV, performance optimization, and hackathon adaptation.
+- **PPE Detection Contract**: [docs/PPE_CONTRACT.md](docs/PPE_CONTRACT.md) — Formal specification of the ppe.v1 contract, schemas, verdict precedence, and YOLO partner guidelines.
 - 📄 **OpenAPI Specification**: [docs/openapi.json](docs/openapi.json) — Static OpenAPI schema exported via `python -m scripts.export_openapi`.
 
 ---
@@ -821,6 +822,35 @@ pytest -v
 ---
 
 ## Changelog
+
+### Backend Patch BP1 — PPE Detection Contract, Rules Engine & Endpoints
+- Schemas: Defined Pydantic v2 schemas in `app/schemas/ppe.py` for PPE items (`PpeItem`), raw worker detections (`PpeWorkerRaw`), evaluated workers (`PpeWorker`), unassigned equipment (`UnassignedItem`), pipeline information (`PpePipelineInfo`), aggregate summary statistics (`PpeSummary`), raw detector output (`PpeExtraRaw`), stored output (`PpeExtra`), and detection configuration endpoints (`DetectConfigOut`).
+- Rules Engine: Implemented pure evaluation functions in `app/services/ppe_rules.py` (`parse_required_equipment`, `validate_detector_output`, `evaluate_worker`, `build_summary`, `apply_rules`) with strict validation, worker isolation, unassigned item exclusion, and precedence rules.
+- Deterministic Dummy Detector: Implemented `PpeDummyDetector` in `app/services/detector/ppe_dummy.py` with 8 weighted scenarios (`all_ppe`, `no_helmet`, `no_vest`, `no_ppe`, `helmet_in_hand`, `hi_vis_not_vest`, `head_hidden`, `torso_hidden`), cheap pixel-sampling determinism, slot assignment, unassigned items, and registered under `DETECTOR_BACKEND=ppe_dummy`.
+- Configuration: Added `DEFAULT_REQUIRED_EQUIPMENT=helmet,vest` and `CAMERA_NAME_MAX_LENGTH=60` in `app/core/config.py` and `.env.example`.
+- API Endpoints:
+  - Extended `POST /detect/image` with multipart form fields `required_equipment` and `camera_name`, with input validation (422) and PPE schema validation / rules application.
+  - Added `GET /detect/config` (auth required) returning detector status, PPE capabilities, and upload constraints.
+  - Added `GET /detect/{detection_id}/image` (auth required, owner or admin) returning original uploaded image with `Cache-Control: private, max-age=300` and path traversal protection.
+- Documentation & Testing: Authored `docs/PPE_CONTRACT.md`, updated `docs/API_REFERENCE.md`, `docs/ARCHITECTURE.md`, `docs/PARTNER_GUIDE.md`, and added comprehensive unit and integration tests in `tests/test_ppe.py`.
+
+### Code Review & Optimization (Phases 1–4)
+- **Phase 1 (Code Hygiene & Dead Code Removal)**:
+  - Fixed missing `Any` typing import in `app/api/routes/analytics.py` (resolving Ruff F821).
+  - Audited and deleted 5 confirmed unused imports: `TokenError` in `app/api/deps.py`, `run_in_threadpool` in `app/api/routes/ws.py`, `Optional` in `app/models/user.py`, `ImageFile` in `app/services/image_service.py`, and `math` in `app/services/job_runner.py`.
+- **Phase 2 (Query Optimization & Session Invalidation Fix)**:
+  - Removed redundant `db.expire_all()` calls from route handlers in `app/api/routes/jobs.py`, `app/api/routes/alerts.py`, and `app/api/routes/analytics.py`, eliminating duplicate `SELECT ... FROM users` roundtrips on every request.
+  - Aligned test client fixture in `tests/conftest.py` with production behavior so each request obtains its own isolated database session from `TestingSessionLocal()`.
+  - Reduced SQL query count from 3 to 2 for `/jobs`, from 3 to 2 for `/alerts`, from 4 to 3 for `/analytics/summary`, and from 3 to 2 for `/analytics/timeseries`.
+- **Phase 3 (Analytics Memory & Latency Optimization)**:
+  - Optimized `GET /analytics/summary` to compute `COUNT`, `SUM(total_count)`, and `MAX(total_count)` in a single database aggregation query using portable ANSI SQL, with source types and alerts grouped at the SQL level.
+  - Sourced `top_labels` by querying only `results` and `source_type` columns for rows with `total_count > 0` (capped to `ANALYTICS_MAX_ROWS`), eliminating mass deserialization of unused ORM entities.
+  - Optimized `GET /analytics/timeseries` to select only scalar columns (`created_at`, `total_count`), reducing memory allocation by ~90% and cutting latency by ~2.8x over 5,000 rows.
+  - Updated `truncated` semantics so numeric summary totals cover the entire date range, setting `truncated=true` when the top_labels sample (or timeseries bucket data) is capped. Added test coverage for range totals exceeding `ANALYTICS_MAX_ROWS` with role-based scoping.
+- **Phase 4 (Asynchronous Concurrency & Event Loop Protection)**:
+  - Offloaded synchronous image validation, decoding, and disk saving (`validate_and_save_image`) in `POST /detect/image` to Starlette's worker threadpool via `run_in_threadpool`, preventing the asyncio event loop from blocking during image uploads.
+  - Verified exception mapping through threadpool (HTTP 413, 400, etc.) and guaranteed orphan-file cleanup remains active.
+  - Added concurrency regression test verifying `/health` responds in <200 ms while an image upload is actively executing in the threadpool.
 
 ### Step 8 — Docker, CI, Packaging & Partner Handoff
 - Created `.gitattributes` enforcing LF line endings across `*.sh`, `Dockerfile`, and `*.yml` files to prevent carriage return (`\r`) execution failures inside Linux containers.

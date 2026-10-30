@@ -32,7 +32,6 @@ def list_alerts(
     - Administrators can see alerts for all users.
     - Supports filtering by level and read status.
     """
-    db.expire_all()
     query = db.query(Alert)
 
     if current_user.role != "admin":
@@ -68,7 +67,6 @@ def get_unread_count(
     - Standard users receive the count of their own unread alerts.
     - Administrators receive the total unread count across all users.
     """
-    db.expire_all()
     query = db.query(Alert).filter(Alert.is_read.is_(False))
 
     if current_user.role != "admin":
@@ -93,7 +91,6 @@ def mark_alert_as_read(
     - Accessible by the alert owner or an administrator.
     - Attempting to mark another user's alert returns HTTP 404.
     """
-    db.expire_all()
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if alert is None:
         raise HTTPException(
@@ -123,7 +120,6 @@ def mark_all_alerts_read(
     db: Session = Depends(get_db),
 ) -> ReadAllOut:
     """Mark all unread alerts belonging to the caller as read."""
-    db.expire_all()
     query = db.query(Alert).filter(
         Alert.user_id == current_user.id,
         Alert.is_read.is_(False),

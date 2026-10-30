@@ -167,10 +167,12 @@ Configured defaults:
 | `POST` | `/auth/refresh` | No | None | JSON: `{refresh_token}` | `200 OK` | `401, 422, 429` |
 | `GET` | `/users/me` | **Yes** | `user` | None | `200 OK` | `401, 429` |
 | `GET` | `/users/` | **Yes** | `admin` | None | `200 OK` | `401, 403, 429` |
-| `POST` | `/detect/image` | **Yes** | `user` | `multipart/form-data`: `file` | `201 Created` | `400, 401, 413, 415, 429, 503, 504` |
+| `POST` | `/detect/image` | **Yes** | `user` | `multipart/form-data`: `file`, `required_equipment`, `camera_name` | `201 Created` | `400, 401, 413, 415, 422, 429, 500, 503, 504` |
 | `POST` | `/detect/video` | **Yes** | `user` | `multipart/form-data`: `file`, query: `frame_skip` | `202 Accepted` | `400, 401, 413, 415, 429, 503` |
+| `GET` | `/detect/config` | **Yes** | `user` | None | `200 OK` | `401, 429` |
 | `GET` | `/detect/history` | **Yes** | `user` | Query: `page`, `limit` | `200 OK` | `401, 422, 429` |
 | `GET` | `/detect/{detection_id}` | **Yes** | `user` | Path: `detection_id` | `200 OK` | `401, 404, 429` |
+| `GET` | `/detect/{detection_id}/image` | **Yes** | `user` | Path: `detection_id` | `200 OK` | `401, 404, 429` |
 | `GET` | `/jobs/{job_id}` | **Yes** | `user` | Path: `job_id` | `200 OK` | `401, 404, 429` |
 | `GET` | `/jobs` | **Yes** | `user` | Query: `page`, `limit`, `status` | `200 OK` | `401, 422, 429` |
 | `GET` | `/alerts` | **Yes** | `user` | Query: `page`, `limit`, `level`, `is_read` | `200 OK` | `401, 422, 429` |
@@ -213,50 +215,130 @@ Readiness probe for container orchestrators.
 ### 2. Detection Endpoints
 
 #### `POST /detect/image`
-Synchronously upload an image (JPEG, PNG, WebP up to 10 MB).
-- **Request**: `multipart/form-data` with field `file`.
-- **Response (`201 Created`)**:
+Synchronously upload an image (JPEG, PNG, WebP up to 10 MB) for object and PPE detection.
+- **Request**: `multipart/form-data` with fields:
+  - `file` (Binary File, required): Image file.
+  - `required_equipment` (string, optional): Comma-separated subset of required equipment (`helmet`, `vest`). Defaults to server setting `DEFAULT_REQUIRED_EQUIPMENT` (`helmet,vest`). Invalid values return `422 Unprocessable Entity` with location `["body", "required_equipment"]`.
+  - `camera_name` (string, optional): Camera or checkpoint label up to 60 characters (`[a-zA-Z0-9 _.-]`). Empty strings are converted to `null`. Invalid characters or excessive length return `422 Unprocessable Entity` with location `["body", "camera_name"]`.
+- **Response (`201 Created`)** with PPE detector (`DETECTOR_BACKEND=ppe_dummy` or YOLO):
 ```json
 {
   "id": 14,
   "user_id": 2,
   "source_type": "image",
   "file_path": "uploads/images/3f82cb5a-6058-45dc-913a-a131b790c370.jpg",
-  "detector_name": "dummy",
+  "detector_name": "ppe-dummy",
   "total_count": 2,
   "results": {
     "objects": [
       {
         "label": "person",
-        "confidence": 0.875,
-        "bbox": {
-          "x1": 50.0,
-          "y1": 60.0,
-          "x2": 150.0,
-          "y2": 220.0
-        }
+        "confidence": 0.94,
+        "bbox": {"x1": 50, "y1": 40, "x2": 250, "y2": 440}
       },
       {
-        "label": "car",
-        "confidence": 0.724,
-        "bbox": {
-          "x1": 200.0,
-          "y1": 180.0,
-          "x2": 380.0,
-          "y2": 310.0
-        }
+        "label": "helmet",
+        "confidence": 0.92,
+        "bbox": {"x1": 90, "y1": 45, "x2": 210, "y2": 130}
+      },
+      {
+        "label": "vest",
+        "confidence": 0.89,
+        "bbox": {"x1": 70, "y1": 140, "x2": 230, "y2": 300}
       }
     ],
     "total_count": 2,
     "image_width": 640,
     "image_height": 480,
-    "inference_ms": 12.4,
-    "detector_name": "dummy",
-    "extra": {}
+    "inference_ms": 14.2,
+    "detector_name": "ppe-dummy",
+    "extra": {
+      "schema": "ppe.v1",
+      "camera_name": "Gate-1",
+      "required_equipment": ["helmet", "vest"],
+      "workers": [
+        {
+          "id": 1,
+          "bbox": [50, 40, 250, 440],
+          "person_confidence": 0.94,
+          "helmet": {"status": "present", "confidence": 0.92, "bbox": [90, 45, 210, 130]},
+          "vest": {"status": "present", "confidence": 0.89, "bbox": [70, 140, 230, 300]},
+          "badge_id": 12,
+          "flags": [],
+          "notes": ["Worker fully visible and facing camera."],
+          "verdict": "compliant",
+          "missing": [],
+          "uncertain_items": [],
+          "why": [
+            "Worker fully visible and facing camera.",
+            "Helmet: detected on the worker's head (confidence 0.92).",
+            "Vest: detected on the worker's torso (confidence 0.89).",
+            "Required equipment: helmet, vest."
+          ],
+          "worker_id": null,
+          "worker_name": null,
+          "identified": false
+        }
+      ],
+      "unassigned_items": [],
+      "pipeline": {
+        "low_light_enhanced": false,
+        "zoom_pass_workers": []
+      },
+      "summary": {
+        "workers": 1,
+        "compliant": 1,
+        "violations": 0,
+        "uncertain": 0,
+        "missing_helmet": 0,
+        "missing_vest": 0,
+        "compliance_rate": 1.0,
+        "violating_worker_ids": [],
+        "required_equipment": ["helmet", "vest"]
+      }
+    }
   },
   "created_at": "2026-10-26T14:20:00+00:00"
 }
 ```
+
+#### `GET /detect/config`
+Retrieve detection backend configuration, PPE schema metadata, and file upload parameters for clients.
+- **Auth**: Bearer token required (`user` or `admin`).
+- **Response (`200 OK`)**:
+```json
+{
+  "detector": {
+    "name": "ppe-dummy",
+    "is_placeholder": true,
+    "loaded": true
+  },
+  "ppe": {
+    "schema": "ppe.v1",
+    "supported_equipment": ["helmet", "vest"],
+    "default_required_equipment": ["helmet", "vest"]
+  },
+  "upload": {
+    "max_image_mb": 10,
+    "allowed_image_types": ["image/jpeg", "image/png", "image/webp"],
+    "max_image_dimension": 6000,
+    "max_video_mb": 100,
+    "allowed_video_types": ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"]
+  },
+  "confidence_threshold": 0.5
+}
+```
+
+#### `GET /detect/{detection_id}/image`
+Retrieve the original uploaded image file for an image detection.
+- **Auth**: Bearer token required. Accessible by the resource owner or an `admin`.
+- **Response (`200 OK`)**: Binary image stream.
+  - Header `Content-Type`: MIME type matching the original image (e.g. `image/jpeg`).
+  - Header `Cache-Control`: `private, max-age=300`.
+- **Errors**:
+  - `401 Unauthorized`: Missing or invalid Bearer token.
+  - `404 Not Found`: Detection does not exist, belongs to another user, source is not `"image"`, the image file is missing from disk, or stored path escapes upload directory.
+
 
 #### `POST /detect/video`
 Upload a video file (MP4, MOV, AVI, WebM up to 100 MB) for asynchronous processing.

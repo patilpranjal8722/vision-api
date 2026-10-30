@@ -123,6 +123,44 @@ sequenceDiagram
     Router-->>Client: HTTP 201 Created (DetectionOut JSON)
 ```
 
+### 3.1 PPE Detection & Compliance Processing Flow
+
+When the active detector outputs schema `"ppe.v1"` (e.g. `PpeDummyDetector` or `YoloDetector`), the pipeline performs structural output validation and deterministic rules evaluation before database persistence:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Router as API Route (POST /detect/image)
+    participant Dep as Dependencies (Auth, DB, Settings)
+    participant Svc as Image Service (validate_and_save_image)
+    participant Detector as PPE Detector (ppe-dummy / YOLO)
+    participant Rules as Rules Engine (app/services/ppe_rules)
+    participant DB as Database Session (app/db)
+
+    Client->>Router: POST /detect/image (file, required_equipment, camera_name)
+    Router->>Dep: Parse & validate auth, required_equipment, camera_name
+    Dep-->>Router: Validated parameters & session
+    Router->>Svc: validate_and_save_image(file, settings)
+    Svc-->>Router: (rgb_image, file_path)
+
+    Router->>Detector: detect(rgb_image) via threadpool inference wrapper
+    Detector-->>Router: DetectionResult with extra = PpeExtraRaw ("ppe.v1")
+
+    Router->>Rules: validate_detector_output(result, width, height)
+    Note over Rules: Validate boxes, confidences, badge IDs, flags, schema
+    Rules-->>Router: Validation passed (or 500 InvalidDetectorOutput)
+
+    Router->>Rules: apply_rules(result, required_equipment, camera_name)
+    Note over Rules: Evaluate worker compliance verdicts & build summary
+    Rules-->>Router: Final DetectionResult with extra = PpeExtra
+
+    Router->>DB: INSERT Detection(user_id, source_type="image", file_path, results)
+    DB-->>Router: Persisted Detection record
+
+    Router-->>Client: HTTP 201 Created (DetectionOut JSON with PPE extra)
+```
+
 ### 3.2 Asynchronous Video Processing Flow (POST /detect/video & Polling GET /jobs/{job_id})
 
 The following sequence diagram details asynchronous video submission, thread pool execution, and status polling:

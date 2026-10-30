@@ -53,6 +53,8 @@ class Settings(BaseSettings):
         "image/webp",
     ]
     UPLOAD_DIR: str = "uploads"
+    DEFAULT_REQUIRED_EQUIPMENT: str = "helmet,vest"
+    CAMERA_NAME_MAX_LENGTH: int = 60
 
     # Video & Background Job Settings
     MAX_VIDEO_UPLOAD_MB: int = 100

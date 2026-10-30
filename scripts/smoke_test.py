@@ -10,7 +10,9 @@ Checks performed:
 4. Login with the new credentials
 5. GET /users/me returns authenticated user details
 6. GET /users/ returns 403 Forbidden for non-admin user
-7. POST /detect/image with a Pillow-generated JPEG returns 201 Created
+7. POST /detect/image with a Pillow-generated JPEG returns 201 Created (and validates PPE summary when schema is ppe.v1)
+7b. GET /detect/config returns 200 with detection and PPE configuration
+7c. GET /detect/{id}/image returns 200 with image content type
 8. POST /detect/image without an Authorization header returns 401 Unauthorized
 9. POST /detect/image with a text file named x.jpg returns 400 Bad Request
 10. GET /detect/history lists the uploaded image detection
@@ -172,11 +174,64 @@ class SmokeTestRunner:
             if res.status_code == 201:
                 data = res.json()
                 self.detection_id = data.get("id", 0)
-                self.record_pass(name_7)
+                results_obj = data.get("results", {})
+                extra = results_obj.get("extra", {})
+                if extra.get("schema") == "ppe.v1":
+                    summary = extra.get("summary", {})
+                    workers = extra.get("workers", [])
+                    workers_count = len(workers)
+                    if summary.get("workers") != workers_count:
+                        self.record_fail(
+                            name_7,
+                            f"PPE summary.workers ({summary.get('workers')}) does not equal len(workers) ({workers_count})",
+                        )
+                    elif (
+                        summary.get("violations", 0)
+                        + summary.get("compliant", 0)
+                        + summary.get("uncertain", 0)
+                        != summary.get("workers")
+                    ):
+                        self.record_fail(
+                            name_7,
+                            "violations + compliant + uncertain does not equal summary.workers",
+                        )
+                    else:
+                        self.record_pass(name_7)
+                else:
+                    self.record_pass(name_7)
             else:
                 self.record_fail(name_7, f"Status {res.status_code}, body: {res.text}")
         except Exception as exc:
             self.record_fail(name_7, f"Request failed: {exc}")
+
+        # 7b. GET /detect/config returns 200
+        name_config = "7b. GET /detect/config returns 200 with detection configuration"
+        try:
+            res = self.client.get("/detect/config", headers=auth_headers)
+            if res.status_code == 200 and "detector" in res.json() and "ppe" in res.json():
+                self.record_pass(name_config)
+            else:
+                self.record_fail(name_config, f"Status {res.status_code}, body: {res.text}")
+        except Exception as exc:
+            self.record_fail(name_config, f"Request failed: {exc}")
+
+        # 7c. GET /detect/{id}/image returns 200 with image content type
+        name_image = "7c. GET /detect/{id}/image returns 200 with image content type"
+        try:
+            if self.detection_id > 0:
+                res = self.client.get(f"/detect/{self.detection_id}/image", headers=auth_headers)
+                content_type = res.headers.get("content-type", "")
+                if res.status_code == 200 and content_type.startswith("image/"):
+                    self.record_pass(name_image)
+                else:
+                    self.record_fail(
+                        name_image,
+                        f"Status {res.status_code}, content-type: {content_type}",
+                    )
+            else:
+                self.record_skip(name_image, "No image uploaded yet")
+        except Exception as exc:
+            self.record_fail(name_image, f"Request failed: {exc}")
 
         # 8. POST /detect/image without a token gives 401
         name_8 = "8. POST /detect/image without auth token gives 401"

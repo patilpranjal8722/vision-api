@@ -149,11 +149,38 @@ The frontend follows five strict architectural rules for backend integration:
 
 ---
 
+---
+
+## UI Kit
+
+The frontend includes a reusable, accessible design component kit built with Tailwind CSS, Lucide icons, and Radix UI primitives:
+
+- **`VerdictBadge`** (`src/components/common/VerdictBadge.tsx`): Displays PPE compliance verdicts (`compliant`, `violation`, `uncertain`) with semantic F1 color tokens, accessible icons, and custom label overrides.
+- **`VerdictLegend`** (`src/components/common/VerdictLegend.tsx`): Explains the three compliance categories along with their human-readable definitions.
+- **`Spinner`** (`src/components/common/Spinner.tsx`): Animated spinning indicator with accessible hidden text and `sm`/`md`/`lg` sizing.
+- **`LoadingState`** (`src/components/common/LoadingState.tsx`): Centered spinner and message with `role="status"` and `aria-live="polite"` for asynchronous views.
+- **`CardSkeleton`** (`src/components/common/CardSkeleton.tsx`): Skeleton placeholder matching stat and panel card layout.
+- **`TableSkeleton`** (`src/components/common/TableSkeleton.tsx`): Skeleton placeholder for tabular data with configurable rows and columns.
+- **`EmptyState`** (`src/components/common/EmptyState.tsx`): Zero-data placeholder displaying an icon, title, explanatory copy, and recovery action button.
+- **`ErrorState`** (`src/components/common/ErrorState.tsx`): Accessible error presentation (`role="alert"`) supporting `card` and `inline` variants, copyable request reference IDs, and retry actions.
+- **`StatCard`** (`src/components/common/StatCard.tsx`): KPI metric card featuring semantic verdict accent borders/tones and loading skeleton states.
+- **`ConfirmDialog`** (`src/components/common/ConfirmDialog.tsx`): Accessible Radix confirmation modal supporting asynchronous pending states, spinner indicators, and automatic error toast dispatch.
+- **`notify`** (`src/lib/notify.ts`): Typed notification wrapper over Sonner for consistent success, info, warning, error, and `apiError` toast alerts.
+- **`PageHeader`** (`src/components/common/PageHeader.tsx`): Standardized page header supporting status badges and responsive actions slots.
+- **`ErrorBoundary`** (`src/components/common/ErrorBoundary.tsx`): React class component boundary isolating page render failures to preserve sidebar and navigation integrity.
+- **`RouteErrorPage`** (`src/pages/RouteErrorPage.tsx`): Top-level React Router error element catching navigation and routing exceptions.
+
+### Interactive UI Showcase (Development Only)
+
+In development mode (`npm run dev`), open **[http://127.0.0.1:5173/dev/ui-kit](http://127.0.0.1:5173/dev/ui-kit)** to inspect and test all components, badge variants, loading states, error states, and async dialog flows. The showcase is lazy-loaded and omitted from production builds.
+
+---
+
 ## Development Roadmap
 
 - [x] **Step F1**: Scaffold, app shell, design tokens, tests
 - [x] **Step F2**: API layer + auth + mocks
-- [ ] **Step F3**: UI kit
+- [x] **Step F3**: UI kit
 - [ ] **Step F4**: Analyze page _(needs backend patch BP1 first)_
 - [ ] **Step F5**: Annotated result
 - [ ] **Step F6**: Workers page _(needs BP2)_

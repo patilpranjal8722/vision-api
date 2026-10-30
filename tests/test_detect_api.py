@@ -318,3 +318,128 @@ def test_detect_history_and_item_access_control(
     admin_get_det2 = client.get(f"/detect/{det2_id}", headers=_auth_header(admin))
     assert admin_get_det2.status_code == 200
     assert admin_get_det2.json()["id"] == det2_id
+
+
+def test_event_loop_unblocked_during_image_upload(
+    test_users: dict[str, User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that event loop stays responsive during image upload by verifying concurrent /health returns quickly."""
+    import asyncio
+    import time
+    import httpx
+    from app.main import create_app
+    from app.services.detector.factory import get_detector
+    import app.api.routes.detect as detect_module
+
+    app = create_app()
+    detector = get_detector()
+    detector.load()
+    app.state.detector = detector
+
+    user1 = test_users["user1"]
+    token = create_access_token(user1.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    orig_validate = detect_module.validate_and_save_image
+
+    def slow_validate_and_save(file, settings):
+        time.sleep(0.35)
+        return orig_validate(file, settings=settings)
+
+    monkeypatch.setattr(detect_module, "validate_and_save_image", slow_validate_and_save)
+
+    img_bytes = _generate_image_bytes()
+
+    async def run_concurrent_test():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+            upload_completed = False
+
+            async def do_upload():
+                nonlocal upload_completed
+                files = {"file": ("test.jpg", img_bytes, "image/jpeg")}
+                res = await async_client.post("/detect/image", headers=headers, files=files)
+                upload_completed = True
+                return res
+
+            async def do_health_probe():
+                await asyncio.sleep(0.05)
+                # Upload should still be executing in the worker threadpool
+                assert not upload_completed
+                t0 = time.perf_counter()
+                res = await async_client.get("/health")
+                t1 = time.perf_counter()
+                duration = t1 - t0
+                return res, duration
+
+            upload_res, (health_res, health_duration) = await asyncio.gather(
+                do_upload(),
+                do_health_probe(),
+            )
+            return upload_res, health_res, health_duration
+
+    upload_res, health_res, health_duration = asyncio.run(run_concurrent_test())
+
+    assert upload_res.status_code == 201
+    assert health_res.status_code == 200
+    # If the event loop had been blocked by slow_validate_and_save (0.35s), health_duration would be >= 0.3s
+    assert health_duration < 0.2
+
+
+def test_detect_image_threadpool_http_exception_and_orphan_cleanup(
+    client: TestClient,
+    test_users: dict[str, User],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Test that HTTPException raised in threadpool preserves status and detail, and orphan file is cleaned up."""
+    user1 = test_users["user1"]
+    token = create_access_token(user1.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Verify HTTPException mapping from threadpool
+    from fastapi import HTTPException, status
+    import app.api.routes.detect as detect_module
+
+    def raising_validate(file, settings):
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Custom upload limit exceeded",
+        )
+
+    monkeypatch.setattr(detect_module, "validate_and_save_image", raising_validate)
+
+    img_bytes = _generate_image_bytes()
+    res = client.post(
+        "/detect/image",
+        headers=headers,
+        files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+    )
+    assert res.status_code == 413
+    assert res.json()["detail"] == "Custom upload limit exceeded"
+
+    # 2. Verify orphan cleanup when failure occurs after validate_and_save_image returns a file_path
+    dummy_file = tmp_path / "orphan_test.jpg"
+    dummy_file.write_bytes(img_bytes)
+    assert dummy_file.exists()
+
+    def mock_validate_with_file(file, settings):
+        return Image.new("RGB", (10, 10)), str(dummy_file)
+
+    monkeypatch.setattr(detect_module, "validate_and_save_image", mock_validate_with_file)
+
+    async def broken_inference(*args, **kwargs):
+        raise RuntimeError("Inference exploded")
+
+    monkeypatch.setattr("app.api.routes.detect.run_inference", broken_inference)
+
+    res2 = client.post(
+        "/detect/image",
+        headers=headers,
+        files={"file": ("test.jpg", img_bytes, "image/jpeg")},
+    )
+    assert res2.status_code == 500
+    assert not dummy_file.exists(), "Orphan file must be cleaned up on inference failure"
+
+

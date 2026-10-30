@@ -36,3 +36,6 @@ models_store/*
 # Logs
 logs/
 *.log
+
+node_modules/
+frontend/dist/

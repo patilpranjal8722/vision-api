@@ -29,8 +29,6 @@ def get_job_by_id(
     - Returns 404 if not found or unauthorized to prevent disclosing job existence.
     - Result payload is populated only when status is 'done'; otherwise null.
     """
-    # Ensure latest commits from background worker threads are observed
-    db.expire_all()
     job = db.query(Job).filter(Job.id == job_id).first()
     if job is None:
         raise HTTPException(
@@ -83,7 +81,6 @@ def list_jobs(
     - Administrators can view all background jobs.
     - Supports optional filtering by job status.
     """
-    db.expire_all()
     query = db.query(Job)
     if current_user.role != "admin":
         query = query.filter(Job.user_id == current_user.id)

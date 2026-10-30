@@ -2,7 +2,6 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import math
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 

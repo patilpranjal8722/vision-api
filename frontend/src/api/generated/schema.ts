@@ -205,9 +205,11 @@ export interface paths {
          * @description Upload an image file, validate dimensions/format, run detection, and save results.
          *
          *     - Validates MIME type, file size (streaming 413 cutoff), and Pillow image decoding.
+         *     - Accepts optional multipart form fields: required_equipment and camera_name.
          *     - Saves image to disk under a generated UUID filename in UPLOAD_DIR/images/.
          *     - Returns 503 if detector is not loaded/available.
          *     - Runs inference via run_inference() protecting against queue saturation (503) and timeout (504).
+         *     - If detector returns PPE schema ('ppe.v1'), runs validate_detector_output and apply_rules.
          *     - Cleans up orphan uploaded image file if inference or database commit fails.
          *     - Persists detection metadata, counts, and bounding box JSON in the database.
          */
@@ -233,6 +235,53 @@ export interface paths {
          *     - Administrators can view all system detection records.
          */
         get: operations["get_detection_history_detect_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/detect/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve detection pipeline and PPE configuration
+         * @description Retrieve active detector backend status, PPE equipment rules, and upload limits.
+         *
+         *     Declared before /{detection_id} so the string 'config' is never parsed as a numeric ID.
+         *     Requires authentication.
+         */
+        get: operations["get_detect_config_detect_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/detect/{detection_id}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download original image for a detection
+         * @description Retrieve the original uploaded image file associated with a detection record.
+         *
+         *     - Only accessible to the record owner or administrators (404 otherwise).
+         *     - Checks path traversal containment within UPLOAD_DIR.
+         *     - Sets Cache-Control: private, max-age=300.
+         */
+        get: operations["get_detection_image_detect__detection_id__image_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -528,6 +577,10 @@ export interface components {
         Body_detect_image_detect_image_post: {
             /** File */
             file: string;
+            /** Required Equipment */
+            required_equipment?: string | null;
+            /** Camera Name */
+            camera_name?: string | null;
         };
         /** Body_detect_video_detect_video_post */
         Body_detect_video_detect_video_post: {
@@ -583,6 +636,17 @@ export interface components {
              * @description Bottom-right Y pixel coordinate
              */
             y2: number;
+        };
+        /**
+         * DetectConfigOut
+         * @description Configuration endpoint response schema.
+         */
+        DetectConfigOut: {
+            detector: components["schemas"]["DetectorConfigOut"];
+            ppe: components["schemas"]["PpeConfigOut"];
+            upload: components["schemas"]["UploadConfigOut"];
+            /** Confidence Threshold */
+            confidence_threshold: number;
         };
         /**
          * DetectedObject
@@ -666,6 +730,18 @@ export interface components {
             extra?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * DetectorConfigOut
+         * @description Metadata about the active detector backend.
+         */
+        DetectorConfigOut: {
+            /** Name */
+            name: string;
+            /** Is Placeholder */
+            is_placeholder: boolean;
+            /** Loaded */
+            loaded: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -761,6 +837,27 @@ export interface components {
             created_at: string;
         };
         /**
+         * PpeConfigOut
+         * @description PPE domain configuration.
+         */
+        PpeConfigOut: {
+            /**
+             * Schema
+             * @default ppe.v1
+             */
+            schema: string;
+            /**
+             * Supported Equipment
+             * @default [
+             *       "helmet",
+             *       "vest"
+             *     ]
+             */
+            supported_equipment: string[];
+            /** Default Required Equipment */
+            default_required_equipment: string[];
+        };
+        /**
          * ReadAllOut
          * @description Schema for read-all alerts response.
          */
@@ -814,6 +911,22 @@ export interface components {
         UnreadCountOut: {
             /** Unread Count */
             unread_count: number;
+        };
+        /**
+         * UploadConfigOut
+         * @description File upload size and format constraints.
+         */
+        UploadConfigOut: {
+            /** Max Image Mb */
+            max_image_mb: number;
+            /** Allowed Image Types */
+            allowed_image_types: string[];
+            /** Max Image Dimension */
+            max_image_dimension: number;
+            /** Max Video Mb */
+            max_video_mb: number;
+            /** Allowed Video Types */
+            allowed_video_types: string[];
         };
         /**
          * UserCreate
@@ -1160,6 +1273,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DetectionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_detect_config_detect_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetectConfigOut"];
+                };
+            };
+        };
+    };
+    get_detection_image_detect__detection_id__image_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                detection_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
