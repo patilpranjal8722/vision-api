@@ -2,21 +2,26 @@ import React, { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
+import { AuthProvider } from '@/features/auth/AuthProvider'
+import type { AuthStatus } from '@/features/auth/AuthContext'
+import type { UserOut } from '@/api/types'
 
 interface AppProvidersProps {
   children: React.ReactNode
   queryClient?: QueryClient
+  initialAuthStatus?: AuthStatus
+  initialUser?: UserOut | null
 }
 
 /**
- * AppProviders - Global context providers for QueryClient, Tooltip, and Toast notifications.
- *
- * Configured per Step F1 requirements:
- * - QueryClient: retry = 1, staleTime = 30s, refetchOnWindowFocus = false
- * - TooltipProvider: for all hover tooltips across the shell
- * - Toaster: Sonner toast container
+ * AppProviders - Global context providers for QueryClient, Auth, Tooltip, and Toast notifications.
  */
-export function AppProviders({ children, queryClient: customClient }: AppProvidersProps) {
+export function AppProviders({
+  children,
+  queryClient: customClient,
+  initialAuthStatus,
+  initialUser,
+}: AppProvidersProps) {
   const [defaultClient] = useState(
     () =>
       new QueryClient({
@@ -34,10 +39,12 @@ export function AppProviders({ children, queryClient: customClient }: AppProvide
 
   return (
     <QueryClientProvider client={client}>
-      <TooltipProvider delayDuration={200}>
-        {children}
-        <Toaster position="top-right" richColors />
-      </TooltipProvider>
+      <AuthProvider initialStatus={initialAuthStatus} initialUser={initialUser}>
+        <TooltipProvider delayDuration={200}>
+          {children}
+          <Toaster position="top-right" richColors />
+        </TooltipProvider>
+      </AuthProvider>
     </QueryClientProvider>
   )
 }

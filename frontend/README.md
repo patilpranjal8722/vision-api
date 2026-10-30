@@ -44,6 +44,57 @@ Open your browser at **[http://127.0.0.1:5173](http://127.0.0.1:5173)**.
 | `npm run test:watch`   | `vitest`               | Runs tests in interactive watch mode for active development                      |
 | `npm run format`       | `prettier --write .`   | Automatically formats all TypeScript, TSX, CSS, and JSON files                   |
 | `npm run format:check` | `prettier --check .`   | Checks formatting compliance in CI/CD without modifying files                    |
+| `npm run gen:api`      | `openapi-typescript`   | Regenerates TypeScript types from backend OpenAPI contract (`docs/openapi.json`) |
+
+---
+
+## Authentication
+
+### Token Storage Architecture & Trade-Offs
+
+- **Access Token (In-Memory)**: Kept in memory only (`src/lib/tokenStorage.ts`). Short-lived (15 minutes). Never written to `localStorage` or `sessionStorage` to mitigate token theft via persistent disk extraction.
+- **Refresh Token (`localStorage`)**: Stored in `localStorage` under key `ppe.refresh_token`. Longer-lived (7 days).
+- **Trade-Off**: `localStorage` is accessible to scripts running in the same origin and is therefore susceptible to Cross-Site Scripting (XSS). For an enterprise production environment, backend-managed `HttpOnly`, `Secure`, `SameSite=Strict` cookies are recommended. For this dashboard hackathon/project setup, `localStorage` provides a resilient and straightforward mechanism for session persistence without cookie domain coordination.
+
+### Single-Flight Token Refresh
+
+The backend rotates refresh tokens on every refresh call and rate-limits the endpoint to 10 requests per minute. If multiple API requests fail with HTTP 401 concurrently, the response interceptor in `src/api/client.ts` uses a **single-flight** promise. All failed requests await the exact same refresh promise, preventing race conditions, duplicate rotation invalidations, and 429 rate limit errors.
+
+### Request Format
+
+- **Login (`POST /auth/login`)**: Takes `application/x-www-form-urlencoded` with fields `username` and `password`. The `username` form field accepts either the user's username or their registered email address.
+- **Registration (`POST /auth/register`)**: Takes JSON `{ email, username, password }` and returns HTTP 201 with the created `UserOut` schema.
+- **Refresh (`POST /auth/refresh`)**: Takes JSON `{ refresh_token }` and returns a newly rotated token pair.
+
+### Demo Credentials
+
+When running with mock data enabled, the following demo account is available:
+
+- **Username**: `demo` (or email: `demo@example.com`)
+- **Password**: `Demo@1234`
+- **Role**: `user`
+
+### Switching to the Real Backend
+
+1. Ensure the FastAPI backend server is running on `http://127.0.0.1:8000`.
+2. Edit `frontend/.env` (or create it from `.env.example`):
+   ```env
+   VITE_API_URL=http://127.0.0.1:8000
+   VITE_WS_URL=ws://127.0.0.1:8000
+   VITE_USE_MOCKS=false
+   ```
+3. Restart the Vite development server (`npm run dev`).
+4. **CORS Requirement**: The backend server must allow `http://127.0.0.1:5173` in its `ALLOWED_ORIGINS` setting.
+
+### Updating API Types
+
+Whenever the FastAPI backend routes or Pydantic models are modified:
+
+```powershell
+npm run gen:api
+```
+
+This regenerates `src/api/generated/schema.ts` from `docs/openapi.json`. Domain types (`Token`, `UserOut`, `UserCreate`, `RefreshRequest`) are re-exported through `src/api/types.ts`.
 
 ---
 
@@ -101,7 +152,7 @@ The frontend follows five strict architectural rules for backend integration:
 ## Development Roadmap
 
 - [x] **Step F1**: Scaffold, app shell, design tokens, tests
-- [ ] **Step F2**: API layer + auth + mocks
+- [x] **Step F2**: API layer + auth + mocks
 - [ ] **Step F3**: UI kit
 - [ ] **Step F4**: Analyze page _(needs backend patch BP1 first)_
 - [ ] **Step F5**: Annotated result

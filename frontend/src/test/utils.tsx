@@ -4,10 +4,15 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { QueryClient } from '@tanstack/react-query'
 import { AppProviders } from '@/app/providers'
 import { routes } from '@/app/router'
+import type { AuthStatus } from '@/features/auth/AuthContext'
+import type { UserOut } from '@/api/types'
+import { DEMO_USER } from '@/mocks/fixtures/user'
 
 export interface RenderWithProvidersOptions extends Omit<RenderOptions, 'wrapper'> {
   initialEntries?: string[]
   queryClient?: QueryClient
+  initialAuthStatus?: AuthStatus
+  initialUser?: UserOut | null
 }
 
 /**
@@ -15,6 +20,7 @@ export interface RenderWithProvidersOptions extends Omit<RenderOptions, 'wrapper
  *
  * Why: Isolated test queries and memory-based navigation prevent test pollution
  * and allow testing real route transitions without browser window location changes.
+ * Defaults to 'authenticated' status with DEMO_USER so existing shell tests work out of the box.
  */
 export function renderWithProviders(
   ui?: React.ReactElement,
@@ -30,6 +36,8 @@ export function renderWithProviders(
         },
       },
     }),
+    initialAuthStatus = 'authenticated',
+    initialUser = initialAuthStatus === 'authenticated' ? DEMO_USER : null,
     ...renderOptions
   } = options
 
@@ -39,7 +47,11 @@ export function renderWithProviders(
 
   return {
     ...render(
-      <AppProviders queryClient={queryClient}>
+      <AppProviders
+        queryClient={queryClient}
+        initialAuthStatus={initialAuthStatus}
+        initialUser={initialUser}
+      >
         {ui ?? <RouterProvider router={router} />}
       </AppProviders>,
       renderOptions,

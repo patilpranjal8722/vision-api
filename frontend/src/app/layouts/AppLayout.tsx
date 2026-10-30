@@ -1,7 +1,18 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useAuth } from '@/hooks/useAuth'
+import { env } from '@/lib/env'
 import { AppBackground } from '@/components/common/AppBackground'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
 import {
   Sheet,
@@ -15,8 +26,10 @@ import {
   AlertTriangle,
   Bell,
   HardHat,
+  LogOut,
   Menu,
   ShieldCheck,
+  Sparkles,
   Table,
   User,
   Users,
@@ -45,10 +58,11 @@ const NAV_ITEMS: NavItem[] = [
  * - Translucent surfaces (bg-card/90 with backdrop-blur-sm)
  * - Desktop sidebar (md:flex) and mobile Sheet navigation
  * - Proper landmarks: <nav>, <header>, <main>
- * - Topbar with dynamic page title and 3 disabled placeholder buttons with tooltips
+ * - Topbar with dynamic page title, Mock data indicator, active user dropdown, and 2 disabled placeholders with tooltips
  * - Accessible focus styles, keyboard navigation, and aria-labels
  */
 export function AppLayout() {
+  const { user, logout } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
 
@@ -116,7 +130,7 @@ export function AppLayout() {
 
           {/* Sidebar Footer info */}
           <div className="p-4 text-xs text-muted-foreground text-center">
-            Step F1 &bull; App Shell Active
+            Step F2 &bull; Auth &amp; API Active
           </div>
         </aside>
 
@@ -163,11 +177,22 @@ export function AppLayout() {
               <h2 className="text-lg font-semibold tracking-tight text-foreground truncate">
                 {currentTitle}
               </h2>
+
+              {/* Mock Mode Topbar Indicator */}
+              {env.VITE_USE_MOCKS && (
+                <Badge
+                  variant="secondary"
+                  className="hidden sm:inline-flex items-center gap-1 bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 text-[11px] font-medium"
+                >
+                  <Sparkles className="h-3 w-3" aria-hidden="true" />
+                  Mock data
+                </Badge>
+              )}
             </div>
 
-            {/* Right: Three Disabled Placeholder Actions with Tooltips */}
+            {/* Right: Actions and User Profile */}
             <div className="flex items-center gap-2">
-              {/* 1. Alerts Bell */}
+              {/* 1. Alerts Bell (Disabled until Step F8) */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span tabIndex={0} className="inline-flex">
@@ -187,7 +212,7 @@ export function AppLayout() {
                 </TooltipContent>
               </Tooltip>
 
-              {/* 2. Sound Toggle */}
+              {/* 2. Sound Toggle (Disabled until Step F8) */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span tabIndex={0} className="inline-flex">
@@ -209,26 +234,55 @@ export function AppLayout() {
 
               <Separator orientation="vertical" className="h-6 mx-1 bg-border/60" />
 
-              {/* 3. User Menu (Guest) */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={0} className="inline-flex">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled
-                      aria-label="User profile: Guest (Login arrives in Step F2)"
-                      className="gap-2 text-muted-foreground opacity-50 cursor-not-allowed text-xs font-medium px-2.5 focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <User className="h-4 w-4" aria-hidden="true" />
-                      <span className="hidden sm:inline">Guest</span>
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p>Login arrives in Step F2</p>
-                </TooltipContent>
-              </Tooltip>
+              {/* 3. User Menu Dropdown (Enabled in Step F2) */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="User profile menu"
+                    className="gap-2 text-foreground font-medium text-xs px-2.5 focus-visible:ring-2 focus-visible:ring-ring cursor-pointer hover:bg-accent"
+                  >
+                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-primary">
+                      <User className="h-3.5 w-3.5" aria-hidden="true" />
+                    </div>
+                    <span className="hidden sm:inline font-semibold">
+                      {user?.username || 'Account'}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="w-56 p-1.5 bg-card/95 backdrop-blur-md"
+                >
+                  <DropdownMenuLabel className="font-normal p-2">
+                    <div className="flex flex-col space-y-1">
+                      <p className="text-sm font-semibold text-foreground leading-none">
+                        {user?.username || 'User'}
+                      </p>
+                      <p className="text-xs text-muted-foreground leading-none truncate">
+                        {user?.email}
+                      </p>
+                      <div className="pt-1">
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] uppercase font-bold tracking-wider"
+                        >
+                          {user?.role || 'user'}
+                        </Badge>
+                      </div>
+                    </div>
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator className="bg-border/60" />
+                  <DropdownMenuItem
+                    onClick={logout}
+                    className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer gap-2 py-2"
+                  >
+                    <LogOut className="h-4 w-4" aria-hidden="true" />
+                    <span>Log out</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </header>
 
